@@ -22,7 +22,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torchvision import transforms
 
-from src.models.depth_model import DepthViT
+from src.models.model import DepthViT
 
 
 def parse_args():

@@ -16,7 +16,7 @@ import numpy as np
 import argparse
 import os
 
-from src.data.ds import MultiTaskDataset
+from src.data.hf_dataset import MultiTaskDataset
 
 
 def denormalize_image(img_tensor):

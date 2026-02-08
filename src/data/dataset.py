@@ -21,24 +21,26 @@ from PIL import Image
 import random
 import numpy as np
 
+from src.data.download import get_data_root, is_dataset_ready
+
 
 class DepthDataset(Dataset):
     """
     Dataset for depth estimation from RGB images.
-    
+
     Loads paired (RGB, Depth) from neighbourhood folders.
     Applies identical random crops to both image and depth map.
-    
+
     For JEPA training, generates multiple views (global + local) with
     synchronized transforms applied to both RGB and depth.
     """
-    
+
     def __init__(
-        self, 
+        self,
         split="train",
         global_img_size=224,
         local_img_size=96,
-        data_root=f"{os.getcwd()}/datalink/cache/datasets--benediktkol--DDOS/snapshots/1ed1314d32ef3a5a7e1434000783a8433517bd0e/data/",
+        data_root=None,
         depth_max=65535.0,   # Max depth value for normalization
         V_global=2,          # Number of global views (for JEPA)
         V_local=4,           # Number of local views (for JEPA)
@@ -48,11 +50,18 @@ class DepthDataset(Dataset):
         self.global_img_size = global_img_size
         self.local_img_size = local_img_size
         self.depth_max = depth_max
-        self.data_root = os.path.join(
-            os.getcwd(),
-            "datalink",
-            "cache/datasets--benediktkol--DDOS/snapshots/1ed1314d32ef3a5a7e1434000783a8433517bd0e/data/"
-        )
+
+        # Resolve data root: explicit arg > env var > default (data/DDOS/)
+        base_dir = get_data_root(data_root)
+        self.data_root = os.path.join(base_dir, "data") + os.sep
+
+        if not is_dataset_ready(base_dir):
+            raise FileNotFoundError(
+                f"Dataset not found at {base_dir}\n"
+                f"Run 'uv run setup' to download the DDOS dataset, or set\n"
+                f"LEDEEP_DATA_DIR to point to an existing download."
+            )
+
         self.V_global = V_global
         self.V_local = V_local
         self.multi_view = multi_view
@@ -423,7 +432,7 @@ class DepthDatasetFull(DepthDataset):
         # Initialize parent to get file lists
         super().__init__(
             split=split,
-            data_root=data_root if data_root else f"{os.getcwd()}/datalink/cache/datasets--benediktkol--DDOS/snapshots/1ed1314d32ef3a5a7e1434000783a8433517bd0e/data/",
+            data_root=data_root,
             depth_max=depth_max,
             multi_view=multi_view
         )

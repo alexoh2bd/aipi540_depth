@@ -14,8 +14,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import wandb
 
-from src.data.depth_ds import DepthDataset, collate_depth
-from src.models.depth_model import DepthViT
+from src.data.dataset import DepthDataset, collate_depth
+from src.models.model import DepthViT
 from src.utils.metrics import compute_metrics
 def parse_args():
     parser = argparse.ArgumentParser()

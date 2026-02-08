@@ -1,11 +1,37 @@
+# Data
 /datalink
+/data
+
+# Virtual environments
+.venv/
+venv/
+
+# Experiment tracking
+/wandb
+
+# Artifacts
+/checkpoints
+/logs
+/test_results
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
 /Sam-3d
 /sam-3d-objects
-/venv
-/wandb
-*__pycache__
-/checkpoints
-*/logs
-# *test_results
-
-*.
