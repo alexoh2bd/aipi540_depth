@@ -18,6 +18,44 @@ import time
 DATASET_REPO = "benediktkol/DDOS"
 DEFAULT_DATA_DIR = os.path.join(os.getcwd(), "data", "DDOS")
 
+
+def _make_total_aware_tqdm(total_bytes, total_files, initial_bytes):
+    """Create a tqdm subclass that knows the total download size upfront.
+
+    snapshot_download's progress bar starts with total=0 and incrementally
+    discovers file sizes. By providing the pre-computed totals (and crediting
+    already-downloaded bytes) we get an accurate overall progress bar from
+    the start, even on resume.
+    """
+    from tqdm.auto import tqdm as _tqdm_base
+
+    class _TotalAwareTqdm(_tqdm_base):
+        def __init__(self, *args, **kwargs):
+            self._lock_total = False
+            # Strip hf_tqdm-specific kwargs that base tqdm doesn't accept
+            kwargs.pop("name", None)
+            desc = str(kwargs.get("desc", ""))
+
+            if "incomplete total" in desc:
+                kwargs["total"] = total_bytes
+                kwargs["initial"] = initial_bytes
+                kwargs["desc"] = "Downloading"
+                super().__init__(*args, **kwargs)
+                self._lock_total = True
+            elif "Fetching" in desc:
+                kwargs["total"] = total_files
+                kwargs["desc"] = f"Fetching {total_files} files"
+                super().__init__(*args, **kwargs)
+            else:
+                super().__init__(*args, **kwargs)
+
+        def __setattr__(self, name, value):
+            if name == "total" and getattr(self, "_lock_total", False):
+                return
+            super().__setattr__(name, value)
+
+    return _TotalAwareTqdm
+
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 5  # seconds
 MAX_BACKOFF = 120  # seconds
@@ -99,9 +137,20 @@ def download_dataset(data_dir=None, force=False, max_retries=MAX_RETRIES):
     all_files = list(api.list_repo_tree(
         DATASET_REPO, repo_type="dataset", recursive=True, token=token,
     ))
-    total_size = sum(f.size for f in all_files if hasattr(f, "size") and f.size)
-    file_count = sum(1 for f in all_files if hasattr(f, "size"))
+    total_size = 0
+    file_count = 0
+    downloaded_bytes = 0
+    for f in all_files:
+        if hasattr(f, "size") and f.size:
+            total_size += f.size
+            file_count += 1
+            if os.path.isfile(os.path.join(data_dir, f.rfilename)):
+                downloaded_bytes += f.size
     print(f"Found {file_count} files ({total_size / (1024 ** 3):.1f} GB)")
+    if downloaded_bytes > 0:
+        print(f"Already downloaded: {downloaded_bytes / (1024 ** 3):.1f} GB")
+
+    tqdm_cls = _make_total_aware_tqdm(total_size, file_count, downloaded_bytes)
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -111,6 +160,7 @@ def download_dataset(data_dir=None, force=False, max_retries=MAX_RETRIES):
                 local_dir=data_dir,
                 token=token,
                 max_workers=32,
+                tqdm_class=tqdm_cls,
             )
             break
         except KeyboardInterrupt:
