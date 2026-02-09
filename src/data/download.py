@@ -71,10 +71,17 @@ def download_dataset(data_dir=None, force=False):
     print(f"\nDownloading to {data_dir}...")
     os.makedirs(data_dir, exist_ok=True)
 
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        print("Tip: Set HF_TOKEN environment variable for higher rate limits.")
+        print("  Get a token at https://huggingface.co/settings/tokens")
+        print()
+
     snapshot_download(
         DATASET_REPO,
         repo_type="dataset",
         local_dir=data_dir,
+        token=token,
     )
 
     if is_dataset_ready(data_dir):
