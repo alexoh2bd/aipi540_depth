@@ -4,16 +4,23 @@ Download the DDOS (Depth from Driving Open Scenes) dataset from HuggingFace.
 Downloads to data/DDOS/ by default. The dataset contains paired RGB images
 and 16-bit depth maps of residential neighborhoods.
 
+Supports resumable downloads with automatic retry on network failures.
+
 Usage:
     uv run setup
 """
 
 import os
 import sys
+import time
 
 
 DATASET_REPO = "benediktkol/DDOS"
 DEFAULT_DATA_DIR = os.path.join(os.getcwd(), "data", "DDOS")
+
+MAX_RETRIES = 5
+INITIAL_BACKOFF = 5  # seconds
+MAX_BACKOFF = 120  # seconds
 
 
 def get_data_root(data_dir=None):
@@ -36,20 +43,16 @@ def is_dataset_ready(data_dir):
     return os.path.isdir(data_path)
 
 
-def download_dataset(data_dir=None, force=False):
+def download_dataset(data_dir=None, force=False, max_retries=MAX_RETRIES):
     """
     Download the DDOS dataset from HuggingFace.
 
     Args:
         data_dir: Where to download (default: data/DDOS/)
         force: Re-download even if already present
+        max_retries: Maximum number of retry attempts on failure
     """
     data_dir = get_data_root(data_dir)
-
-    if is_dataset_ready(data_dir) and not force:
-        print(f"Dataset already exists at {data_dir}")
-        print("Use --force to re-download.")
-        return data_dir
 
     print("=" * 60)
     print("DDOS Dataset Download")
@@ -58,11 +61,15 @@ def download_dataset(data_dir=None, force=False):
     print(f"Destination: {data_dir}")
     print()
     print("This dataset contains paired RGB + depth images of")
-    print("residential neighborhoods. Download size is ~50 GB.")
+    print("residential neighborhoods.")
     print("=" * 60)
 
+    if is_dataset_ready(data_dir) and not force:
+        print(f"\nDataset directory already exists at {data_dir}")
+        print("Verifying completeness and resuming any incomplete downloads...")
+
     try:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import HfApi, snapshot_download
     except ImportError:
         print("Error: huggingface_hub is required. Install with:")
         print("  uv add huggingface_hub")
@@ -85,13 +92,40 @@ def download_dataset(data_dir=None, force=False):
     except ImportError:
         print("Tip: Install hf_transfer for faster downloads: uv add hf_transfer")
 
-    snapshot_download(
-        DATASET_REPO,
-        repo_type="dataset",
-        local_dir=data_dir,
-        token=token,
-        max_workers=8,
-    )
+    # Pre-fetch the complete file listing so snapshot_download knows the
+    # total size upfront (avoids a progress bar with a moving total).
+    print("\nFetching file manifest...")
+    api = HfApi()
+    all_files = list(api.list_repo_tree(
+        DATASET_REPO, repo_type="dataset", recursive=True, token=token,
+    ))
+    total_size = sum(f.size for f in all_files if hasattr(f, "size") and f.size)
+    file_count = sum(1 for f in all_files if hasattr(f, "size"))
+    print(f"Found {file_count} files ({total_size / (1024 ** 3):.1f} GB)")
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            snapshot_download(
+                DATASET_REPO,
+                repo_type="dataset",
+                local_dir=data_dir,
+                token=token,
+                max_workers=32,
+            )
+            break
+        except KeyboardInterrupt:
+            print("\nDownload cancelled by user.")
+            print("Run 'uv run setup' again to resume where you left off.")
+            sys.exit(1)
+        except Exception as e:
+            if attempt == max_retries:
+                print(f"\nDownload failed after {max_retries} attempts: {e}")
+                print("Run 'uv run setup' again to resume where you left off.")
+                sys.exit(1)
+            backoff = min(INITIAL_BACKOFF * (2 ** (attempt - 1)), MAX_BACKOFF)
+            print(f"\nDownload interrupted (attempt {attempt}/{max_retries}): {e}")
+            print(f"Retrying in {backoff}s... (already-downloaded files will be skipped)")
+            time.sleep(backoff)
 
     if is_dataset_ready(data_dir):
         print(f"\nDataset downloaded successfully to {data_dir}")
@@ -110,9 +144,11 @@ def main():
                         help=f"Download location (default: {DEFAULT_DATA_DIR})")
     parser.add_argument("--force", action="store_true",
                         help="Re-download even if already present")
+    parser.add_argument("--retries", type=int, default=MAX_RETRIES,
+                        help=f"Max retry attempts on failure (default: {MAX_RETRIES})")
     args = parser.parse_args()
 
-    download_dataset(data_dir=args.data_dir, force=args.force)
+    download_dataset(data_dir=args.data_dir, force=args.force, max_retries=args.retries)
 
 
 if __name__ == "__main__":
