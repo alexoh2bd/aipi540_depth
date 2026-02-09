@@ -14,8 +14,8 @@ import numpy as np
 import argparse
 import os
 
-from src.data.depth_ds import DepthDataset, collate_depth
-from src.models.depth_model import DepthViT
+from src.data.dataset import DepthDataset, collate_depth
+from src.models.model import DepthViT
 
 
 def denormalize_image(img_tensor):

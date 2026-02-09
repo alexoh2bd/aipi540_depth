@@ -25,8 +25,8 @@ import tqdm
 import wandb
 from src.utils.metrics import compute_metrics
 
-from src.data.depth_ds import DepthDataset, collate_depth
-from src.models.depth_model import get_depth_model, ScaleInvariantLoss, DepthSmoothL1Loss
+from src.data.dataset import DepthDataset, collate_depth
+from src.models.model import get_depth_model, ScaleInvariantLoss, DepthSmoothL1Loss
 from src.losses.loss import SIGReg
 
 logging.basicConfig(level=logging.INFO)

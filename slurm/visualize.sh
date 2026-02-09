@@ -10,11 +10,12 @@
 #SBATCH --gres=gpu:a5000:1
 #SBATCH --cpus-per-task=4
 
-# Create logs directory
+set -e
+
 mkdir -p logs
 
-# Run visualization on 3 validation samples
-python src/visualization/visualize_predictions.py \
+# Visualization doesn't have a uv script yet, so call directly
+uv run python src/visualization/visualize_predictions.py \
     --checkpoint checkpoints/depth_jepa_vit_small.pt \
     --num_samples 3 \
     --output validation_predictions.png \

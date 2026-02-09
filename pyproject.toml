@@ -1,0 +1,38 @@
+[project]
+name = "ledeep"
+version = "1.0.0"
+description = "Depth estimation using LeJEPA with SIGReg regularization"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "datasets>=4.5.0",
+    "hf-transfer>=0.1.9",
+    "matplotlib>=3.10.8",
+    "numpy>=2.2.6",
+    "pillow>=12.1.0",
+    "scikit-learn>=1.7.2",
+    "timm>=1.0.24",
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "tqdm>=4.67.3",
+    "wandb>=0.24.2",
+]
+
+[project.scripts]
+setup = "src.cli:setup"
+train = "src.cli:train"
+evaluate = "src.cli:evaluate"
+infer = "src.cli:infer"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.0",
+    "pytest>=9.0.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -19,7 +19,7 @@ from PIL import Image
 import argparse
 import os
 
-from src.data.depth_ds import DepthDataset
+from src.data.dataset import DepthDataset
 
 
 def denormalize_image(img_tensor):
@@ -156,7 +156,7 @@ def visualize_with_predictions(dataset, model, device, idx=0, save_path="pipelin
     """
     Visualize predictions from a trained model.
     """
-    from depth_model import DepthViT
+    from src.models.model import DepthViT
     
     # Get sample
     img_views, depth_views = dataset[idx]
@@ -256,7 +256,7 @@ def main():
     # If checkpoint provided, also show predictions
     if args.checkpoint and os.path.exists(args.checkpoint):
         print(f"Loading model from {args.checkpoint}...")
-        from depth_model import DepthViT
+        from src.models.model import DepthViT
         
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         

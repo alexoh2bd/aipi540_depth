@@ -10,23 +10,19 @@
 #SBATCH --partition=compsci-gpu
 #SBATCH --gres=gpu:rtx_pro_6000:1
 
-# Create logs directory
+set -e
+
 mkdir -p logs
 mkdir -p checkpoints
-
-# Activate environment (adjust as needed)
-# source ~/.bashrc
-# conda activate jepa
 
 # ============================================
 # JEPA Training (Recommended - Multi-view with SIGReg)
 # ============================================
-# Same loss function logic as run_JEPA.py and loss.py:
-# - 2 global views (224x224) + 4 local views (96x96)
-# - LeJEPA loss: center prediction + SIGReg regularization
-# - Depth supervision on all views
+# 2 global views (224x224) + 4 local views (96x96)
+# LeJEPA loss: center prediction + SIGReg regularization
+# Depth supervision on all views
 
-python train_depth_jepa.py \
+uv run train --deeplearning \
     --epochs 50 \
     --bs 16 \
     --lr 1e-4 \
@@ -44,23 +40,9 @@ python train_depth_jepa.py \
     --save_path checkpoints/depth_jepa_vit_small.pt
 
 # ============================================
-# Alternative: Simple depth training (no multi-view)
-# ============================================
-# python train_depth.py \
-#     --epochs 50 \
-#     --bs 32 \
-#     --lr 1e-4 \
-#     --img_size 224 \
-#     --model vit_small_patch16_224.augreg_in21k \
-#     --num_workers 8 \
-#     --sigreg_weight 0.1 \
-#     --wandb \
-#     --save_path checkpoints/depth_vit_small.pt
-
-# ============================================
 # Alternative: vit_base for better quality (slower)
 # ============================================
-# python train_depth_jepa.py \
+# uv run train --deeplearning \
 #     --epochs 30 \
 #     --bs 8 \
 #     --lr 5e-5 \

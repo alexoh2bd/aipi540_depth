@@ -1,106 +1,128 @@
-# Depth Estimation with JEPA (LeJEPA + SIGReg)
+# LeDEEP: Depth Estimation with LeJEPA + SIGReg
 
-A depth estimation model that combines **Vision Transformer (ViT)** encoding with **JEPA-style multi-view self-supervised learning** and **SIGReg regularization**.
+Monocular depth estimation using a Vision Transformer encoder with LeJEPA-style multi-view self-supervised learning and SIGReg regularization.
 
-## Overview
+## Setup
 
-This project adapts the LeJEPA (Latent Embedding Joint-Embedding Predictive Architecture) framework for dense depth prediction. Instead of learning representations for image classification, we use JEPA's multi-view consistency objective alongside direct depth supervision.
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management. Three commands to get running:
 
-### Key Components
+```bash
+# 1. Install dependencies
+uv sync
 
-| File | Description |
-|------|-------------|
-| `depth_ds.py` | Dataset with synchronized RGB/depth transforms and multi-view generation |
-| `depth_model.py` | ViT encoder + convolutional decoder for dense depth prediction |
-| `train_depth_jepa.py` | Training loop with LeJEPA loss + depth supervision |
-| `loss.py` | SIGReg regularization module (shared with classification JEPA) |
+# 2. Download the DDOS dataset (~136 GB)
+uv run setup
+
+# 3. Train a model
+uv run train --deeplearning --epochs 50 --bs 16
+```
+
+For GPU support with CUDA 12.x on the cluster:
+```bash
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+```
+
+You can also set `LEDEEP_DATA_DIR` to point to an existing dataset download instead of `data/DDOS/`.
+
+## Quick Start
+
+All commands are available as `uv run` scripts:
+
+```bash
+# Download the dataset (only needed once, ~3-5 GB)
+uv run setup
+
+# Train the naive baseline (mean depth predictor)
+uv run train --naive --evaluate
+
+# Train the classical ML baseline (random forest)
+uv run train --classic --evaluate
+
+# Train the deep learning model (LeJEPA + ViT)
+uv run train --deeplearning --epochs 50 --bs 16 --wandb
+
+# Evaluate a trained model
+uv run evaluate --model_path checkpoints/depth_jepa_vit_small.pt
+
+# Run inference on an image
+uv run infer --model_path checkpoints/depth_jepa_vit_small.pt --image_path photo.jpg
+```
+
+## Models
+
+This project implements three modeling approaches as required:
+
+| Approach       | Command                       | Description                                                                     |
+|----------------|-------------------------------|---------------------------------------------------------------------------------|
+| Naive baseline | `uv run train --naive`        | Predicts the mean training depth for every pixel                                |
+| Classical ML   | `uv run train --classic`      | Random forest on hand-crafted patch features (gradients, color stats, position) |
+| Deep learning  | `uv run train --deeplearning` | ViT encoder + convolutional decoder with LeJEPA multi-view loss                 |
+
+## Project Structure
+
+```
+.
+├── pyproject.toml              # Dependencies, scripts, and project metadata
+├── src/
+│   ├── cli.py                  # CLI entry points (setup, train, evaluate, infer)
+│   ├── models/
+│   │   └── model.py            # ViT/ResNet encoder + convolutional decoder
+│   ├── data/
+│   │   ├── dataset.py          # Dataset with synchronized RGB/depth transforms
+│   │   ├── download.py         # Auto-download DDOS dataset from HuggingFace
+│   │   └── hf_dataset.py       # HuggingFace dataset utilities
+│   ├── losses/
+│   │   └── loss.py             # SIGReg regularization and LeJEPA loss
+│   ├── training/
+│   │   ├── train_naive.py      # Naive baseline: mean depth predictor
+│   │   ├── train_classic.py    # Classical ML: random forest on image features
+│   │   ├── train_deeplearning.py  # Deep learning: multi-view JEPA + depth supervision
+│   │   └── train_supervised.py    # Deep learning: supervised only (no multi-view)
+│   ├── test/
+│   │   ├── evaluate.py         # Evaluation with patch-based inference
+│   │   └── inference.py        # Arbitrary-size image inference
+│   ├── visualization/
+│   │   ├── visualize_predictions.py  # Validation sample visualization
+│   │   └── visualize_pipeline.py     # Data augmentation visualization
+│   └── utils/
+│       ├── metrics.py          # Depth metrics (AbsRel, RMSE, delta thresholds)
+│       └── save.py             # Checkpoint saving utilities
+├── slurm/                      # SLURM batch job scripts (cluster-specific)
+├── checkpoints/                # Trained model checkpoints (not tracked)
+└── logs/                       # Training logs (not tracked)
+```
 
 ## Architecture
 
-The project supports two main backbones selectable via `--model`:
+The deep learning model uses a pretrained **ViT-Small** (patch size 16, ImageNet-21k) encoder that produces:
+- **Patch tokens** (14x14 spatial grid) fed to a progressive convolutional decoder for dense depth prediction
+- **CLS token** projected into a 512-dim embedding space for the JEPA objective
 
-1.  **Vision Transformer (ViT)**: `vit_small_patch16_224.augreg_in21k`
-    *   Good for global context.
-    *   Uses standard ViT encoder + simple upsampling decoder.
-2.  **ResNet**: `resnet50.a1_in1k`
-    *   **New**: Supports native high-resolution input ("full sized images") without patching.
-    *   Good for preserving spatial details.
-    *   Uses a 5-stage decoder (stride 32 -> 1) to recover full resolution.
+The decoder upsamples through 4 stages of transposed convolutions (14x14 -> 224x224) to produce a single-channel depth map normalized to [0, 1].
 
-```
-RGB Image (B, 3, H, W)
-        │
-        ▼
-┌─────────────────────────────┐
-│   Backbone (ViT or ResNet)  │
-└─────────────────────────────┘
-        │
-       ...
-```
+### Training Details
 
-## Training
+The deep learning model uses a composite loss: `depth_weight * ScaleInvariantLoss + jepa_weight * LeJEPA_Loss`
 
-### Quick Start
+The LeJEPA training paradigm generates 2 global views (224x224) and 4 local views (96x96) per image, with synchronized transforms applied to both RGB and depth. SIGReg regularization prevents representation collapse by encouraging the embedding space to follow a standard Gaussian distribution.
 
-```bash
-# Standard JEPA training (ViT, crops)
-python src/training/train_depth_jepa.py \
-    --model vit_small_patch16_224.augreg_in21k \
-    --bs 16 --V_global 2 --V_local 4
+## Dataset
 
-# Full Image Training (ResNet, adaptive size)
-python src/training/train_depth_jepa.py \
-    --model resnet50.a1_in1k \
-    --full_size \
-    --max_img_size 1500 \
-    --bs 1 \
-    --grad_accum 16
-```
+**DDOS (Depth from Driving Open Scenes)**: [benediktkol/DDOS](https://huggingface.co/datasets/benediktkol/DDOS)
 
-### Key Arguments
+- Downloaded automatically via `uv run setup` (~3-5 GB)
+- Resolution: 1280x720 paired RGB + 16-bit depth maps
+- Depth normalization: `depth / 65535.0` -> [0, 1]
+- Train/val split: 95/5
+- Default location: `data/DDOS/` (override with `LEDEEP_DATA_DIR`)
 
-```
---model             # Model name (e.g. resnet50.a1_in1k, vit_small...)
---full_size         # Enable adaptive full-image training (no fixed crops)
---max_img_size      # Max dimension for adaptive resizing (default 1536)
---V_global/local    # Number of views (ignored in full_size mode)
-```
+## SLURM Scripts
 
-## Testing & Evaluation
-
-The testing pipeline (`src/test/test.py`) is robust to different input sizes and architectures.
-
-*   **Patch-based Inference**: For ViT on large images, it automatically patches the image, runs inference, and reconstructs the full result.
-*   **Adaptive Inference**: For ResNet, it can process full high-res images directly.
-*   **Auto-Recovery**: Automatically detects checkpoint architecture mismatches (e.g., 4 vs 5 layer decoders) and reloads correctly.
-
-```bash
-python src/test/test.py \
-    --model_path checkpoints/my_model.pt \
-    --img_size 1024 \
-    --save_dir test_results
-```
-
-## Dataset: DDOS (Depth from Driving Open Scenes)
-
-**Source**: [benediktkol/DDOS](https://huggingface.co/datasets/benediktkol/DDOS)
-
-### Data Structure
-
-```
-datalink/neighbourhood/
-├── 0/
-│   ├── image/     # RGB images (1280×720, PNG)
-│   └── depth/     # Depth maps (1280×720, 32-bit int)
-```
-
-### Depth Format
-*   **Resolution**: 1280 × 720
-*   **Format**: 32-bit integer (mode `I`)
-*   **Normalization**: `depth / 65535.0` → [0, 1]
+The `slurm/` directory contains batch job scripts for running on the Duke compsci-gpu cluster. These are cluster-specific and hardcode partition names and GPU types. Adjust the `source` paths and `--gres` flags for your environment.
 
 ## References
 
-- **JEPA**: [A Path Towards Autonomous Machine Intelligence](https://openreview.net/pdf?id=BZ5a1r-kVsf) (LeCun, 2022)
-- **SIGReg**: Spectral regularization for self-supervised learning
-- **Scale-Invariant Loss**: [Depth Map Prediction from a Single Image](https://arxiv.org/abs/1406.2283) (Eigen et al., 2014)
+- [LeJEPA: SIGReg for Self-Supervised Learning](https://arxiv.org/abs/2511.08544) (Balestriero et al., 2025)
+- [I-JEPA: Joint Embedding Predictive Architecture](https://arxiv.org/abs/2301.08243) (Assran et al., 2023)
+- [Scale-Invariant Loss for Depth Prediction](https://arxiv.org/abs/1406.2283) (Eigen et al., 2014)
+- [VICReg: Variance-Invariance-Covariance Regularization](https://arxiv.org/abs/2306.13292) (Zhu et al., 2023)
