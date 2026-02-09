@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.amp import autocast, GradScaler
+from torch.amp import autocast
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 import argparse
 import logging
@@ -71,7 +71,15 @@ def main():
     device = torch.device(args.device)
 
     use_cuda = device.type == "cuda"
-    amp_dtype = torch.bfloat16 if use_cuda else torch.float16
+    use_mps = device.type == "mps"
+    # MPS has no tensor cores, so float16 gives no speedup and causes NaN
+    # in loss functions that use log/square (e.g. ScaleInvariantLoss).
+    if use_cuda:
+        amp_dtype = torch.bfloat16
+    elif use_mps:
+        amp_dtype = torch.float32
+    else:
+        amp_dtype = torch.float32
 
     if use_cuda:
         torch.backends.cuda.enable_flash_sdp(True)
@@ -173,7 +181,6 @@ def main():
     # Training loop
     global_step = 0
     best_delta1 = 0
-    scaler = GradScaler()
     
     for epoch in range(args.epochs):
         model.train()

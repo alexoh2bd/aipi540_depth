@@ -132,7 +132,14 @@ def main():
     # Device-specific settings
     use_cuda = device.type == "cuda"
     use_mps = device.type == "mps"
-    amp_dtype = torch.bfloat16 if use_cuda else torch.float16
+    # MPS has no tensor cores, so float16 gives no speedup and causes NaN
+    # in loss functions that use log/square (e.g. ScaleInvariantLoss).
+    if use_cuda:
+        amp_dtype = torch.bfloat16
+    elif use_mps:
+        amp_dtype = torch.float32
+    else:
+        amp_dtype = torch.float32
 
     if use_cuda:
         torch.backends.cuda.enable_flash_sdp(True)

@@ -30,7 +30,7 @@ def parse_args():
     parser.add_argument("--evaluate", action="store_true",
                         help="Also run evaluation after computing mean")
     parser.add_argument("--img_size", type=int, default=224)
-    parser.add_argument("--device", type=str, default="cuda")
+
     return parser.parse_args()
 
 

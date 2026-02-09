@@ -5,6 +5,11 @@ import sys
 # Add project root to path
 sys.path.append(os.getcwd())
 
+# MPS fallback: timm uses bicubic+antialias interpolation for position embedding
+# resampling, whose backward pass isn't implemented on MPS yet.
+# Must be set before importing torch.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -131,7 +136,10 @@ def main():
         else:
             args.device = "cpu"
     device = torch.device(args.device)
-    amp_dtype = torch.bfloat16 if device.type == "cuda" else torch.float16
+    if device.type == "cuda":
+        amp_dtype = torch.bfloat16
+    else:
+        amp_dtype = torch.float32
     print(f"Using device: {device} (dtype: {amp_dtype})")
 
     os.makedirs(args.save_dir, exist_ok=True)
