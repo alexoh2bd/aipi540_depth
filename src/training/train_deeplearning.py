@@ -18,6 +18,11 @@ import os
 # Add project root to sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), "../.."))
 
+# MPS fallback: timm uses bicubic+antialias interpolation for position embedding
+# resampling, whose backward pass isn't implemented on MPS yet.
+# Must be set before importing torch.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -221,12 +226,12 @@ def main():
     )
     
     # W&B
-    # if args.wandb:
-    wandb.init(
-        project="AIPI_540_Depth_JEPA",
-        name=f"jepa_{args.model.split('.')[0]}_V{args.V_global}+{args.V_local}",
-        config=vars(args),
-    )
+    if args.wandb:
+        wandb.init(
+            project="AIPI_540_Depth_JEPA",
+            name=f"jepa_{args.model.split('.')[0]}_V{args.V_global}+{args.V_local}",
+            config=vars(args),
+        )
     
     # Training loop
     global_step = 0
@@ -314,8 +319,8 @@ def main():
                     "train/sigreg_loss": sigreg_loss.item(),
                     "train/lr": optimizer.param_groups[0]["lr"],
                 }
-                # if args.wandb:
-                wandb.log(log_dict, step=global_step)
+                if args.wandb:
+                    wandb.log(log_dict, step=global_step)
                 pbar.set_postfix(
                     depth=depth_loss.item(),
                     jepa=jepa_loss.item(),
@@ -377,8 +382,8 @@ def main():
         logging.info(f"Val - AbsRel: {val_metrics['abs_rel']:.4f}, RMSE: {val_metrics['rmse']:.4f}, "
                     f"δ1: {val_metrics['delta1']:.4f}")
         
-        # if args.wandb:
-        wandb.log({f"val/{k}": v for k, v in val_metrics.items()}, step=global_step)
+        if args.wandb:
+            wandb.log({f"val/{k}": v for k, v in val_metrics.items()}, step=global_step)
         
         # Save best model
         if val_metrics["delta1"] > best_delta1:
@@ -401,8 +406,8 @@ def main():
     # )    
 
 
-    # if args.wandb:
-    wandb.finish()
+    if args.wandb:
+        wandb.finish()
     
     logging.info(f"Training complete. Best δ1: {best_delta1:.4f}")
 
