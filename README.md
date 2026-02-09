@@ -10,7 +10,7 @@ This project uses [uv](https://docs.astral.sh/uv/) for dependency management. Th
 # 1. Install dependencies
 uv sync
 
-# 2. Download the DDOS dataset (~3-5 GB)
+# 2. Download the DDOS dataset (~50 GB)
 uv run setup
 
 # 3. Train a model

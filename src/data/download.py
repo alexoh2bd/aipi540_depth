@@ -58,7 +58,7 @@ def download_dataset(data_dir=None, force=False):
     print(f"Destination: {data_dir}")
     print()
     print("This dataset contains paired RGB + depth images of")
-    print("residential neighborhoods. Download size is ~3-5 GB.")
+    print("residential neighborhoods. Download size is ~50 GB.")
     print("=" * 60)
 
     try:
@@ -77,11 +77,20 @@ def download_dataset(data_dir=None, force=False):
         print("  Get a token at https://huggingface.co/settings/tokens")
         print()
 
+    # Enable hf_transfer for much faster downloads (Rust-based parallel chunked transfers)
+    try:
+        import hf_transfer  # noqa: F401
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        print("Using hf_transfer for accelerated download.")
+    except ImportError:
+        print("Tip: Install hf_transfer for faster downloads: uv add hf_transfer")
+
     snapshot_download(
         DATASET_REPO,
         repo_type="dataset",
         local_dir=data_dir,
         token=token,
+        max_workers=8,
     )
 
     if is_dataset_ready(data_dir):
