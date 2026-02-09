@@ -13,7 +13,7 @@ uv sync
 # 2. Download the DDOS dataset (~136 GB)
 uv run setup
 
-# 3. Train a model
+# 3. Train a model (see Quick Start for all options)
 uv run train --deeplearning --epochs 50 --bs 16
 ```
 
@@ -38,7 +38,10 @@ uv run train --naive --evaluate
 # Train the classical ML baseline (random forest)
 uv run train --classic --evaluate
 
-# Train the deep learning model (LeJEPA + ViT)
+# Train the supervised depth model (single-view, simpler and faster)
+uv run train --supervised --epochs 50 --bs 16
+
+# Train the LeJEPA multi-view model (richer features, slower)
 uv run train --deeplearning --epochs 50 --bs 16
 
 # Evaluate a trained model
@@ -50,13 +53,22 @@ uv run infer --model_path checkpoints/depth_jepa_vit_small.pt --image_path photo
 
 ## Models
 
-This project implements three modeling approaches as required:
+This project implements four modeling approaches:
 
 | Approach       | Command                       | Description                                                                     |
 |----------------|-------------------------------|---------------------------------------------------------------------------------|
 | Naive baseline | `uv run train --naive`        | Predicts the mean training depth for every pixel                                |
 | Classical ML   | `uv run train --classic`      | Random forest on hand-crafted patch features (gradients, color stats, position) |
-| Deep learning  | `uv run train --deeplearning` | ViT encoder + convolutional decoder with LeJEPA multi-view loss                 |
+| Supervised DL  | `uv run train --supervised`   | Single-view depth supervision with SIGReg regularization (ViT or ResNet)        |
+| LeJEPA DL      | `uv run train --deeplearning` | Multi-view self-supervised learning + depth supervision (ViT only)              |
+
+### Supervised vs. LeJEPA: which should I use?
+
+**`--supervised`** trains a standard depth estimation model: one image in, one depth map out, with SIGReg regularization on the encoder embeddings. It supports both ViT and ResNet backbones, trains faster, and is a good starting point or ablation baseline.
+
+**`--deeplearning`** adds LeJEPA multi-view self-supervised learning on top of depth supervision. Each training image is augmented into 2 global crops (224px) and 4 local crops (96px), and the model learns to produce consistent representations across all of them. This is slower to train but encourages richer, view-invariant features. ViT only.
+
+Use `--supervised` if you want a quick, straightforward run. Use `--deeplearning` if you want the full pipeline with self-supervised representation learning.
 
 ## Project Structure
 

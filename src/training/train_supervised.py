@@ -13,6 +13,11 @@ import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), "../.."))
 
+# MPS fallback: timm uses bicubic+antialias interpolation for position embedding
+# resampling, whose backward pass isn't implemented on MPS yet.
+# Must be set before importing torch.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
