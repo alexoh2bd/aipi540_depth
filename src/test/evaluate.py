@@ -24,7 +24,8 @@ def parse_args():
     parser.add_argument("--local_img_size", type=int, default=96)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--prefetch_factor", type=int, default=2)
-    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--device", type=str, default=None,
+                        help="Device to use (auto-detects cuda > mps if omitted)")
     parser.add_argument("--save_dir", type=str, default="test_results")
     parser.add_argument("--model_name", type=str, default="vit_small_patch16_224.augreg_in21k")
     return parser.parse_args()
@@ -120,10 +121,21 @@ def visualize(img, depth_gt, depth_pred, naive_pred, save_path):
 
 def main():
     args = parse_args()
+
+    # Auto-detect device
+    if args.device is None:
+        if torch.cuda.is_available():
+            args.device = "cuda"
+        elif torch.backends.mps.is_available():
+            args.device = "mps"
+        else:
+            args.device = "cpu"
     device = torch.device(args.device)
+    amp_dtype = torch.bfloat16 if device.type == "cuda" else torch.float16
+    print(f"Using device: {device} (dtype: {amp_dtype})")
+
     os.makedirs(args.save_dir, exist_ok=True)
-    
-    # Load Model
+
     # Load Model
     print(f"Loading model from {args.model_path}")
     
@@ -151,7 +163,7 @@ def main():
     model.load_state_dict(new_state_dict, strict=True)
     
     
-    model.to(torch.bfloat16) # Match training dtype
+    model.to(amp_dtype)
     model.eval()
     
     print("Loading dataset...")
@@ -167,7 +179,7 @@ def main():
         batch_size=8, # 8 images per batch (Total patches will be large)
         collate_fn=collate_depth, 
         num_workers=args.num_workers,
-        pin_memory=True
+        pin_memory=(device.type == "cuda")
     )
     
     metrics_acc = {"abs_rel": 0, "sq_diff": 0, "n_pixels": 0}
@@ -181,10 +193,10 @@ def main():
             # images: (Total_Patches, 3, P, P)
             p_images, p_depths, patch_counts, shapes = batch
             
-            p_images = p_images.to(device, dtype=torch.bfloat16)
-            p_depths = p_depths.to(device, dtype=torch.bfloat16)
+            p_images = p_images.to(device, dtype=amp_dtype)
+            p_depths = p_depths.to(device, dtype=amp_dtype)
             
-            with autocast(device_type="cuda", dtype=torch.bfloat16):
+            with autocast(device_type=device.type, dtype=amp_dtype):
                 p_preds = model(p_images, return_embedding=False)
             
             # Process image by image

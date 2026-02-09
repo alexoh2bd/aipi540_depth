@@ -84,7 +84,8 @@ def parse_args():
     parser.add_argument("--global_img_size", type=int, default=224)
     parser.add_argument("--local_img_size", type=int, default=96)
     parser.add_argument("--model", type=str, default="vit_small_patch16_224.augreg_in21k")
-    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--device", type=str, default=None,
+                        help="Device to use (auto-detects cuda > mps if omitted)")
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--grad_accum", type=int, default=1)
     parser.add_argument("--prefetch_factor", type=int, default=4)
@@ -113,12 +114,28 @@ def parse_args():
 def main():
     args = parse_args()
     
-    torch.backends.cuda.enable_flash_sdp(True)
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
-    torch.backends.cudnn.benchmark = True
-    torch.manual_seed(42)
-    
+    # Auto-detect device
+    if args.device is None:
+        if torch.cuda.is_available():
+            args.device = "cuda"
+        elif torch.backends.mps.is_available():
+            args.device = "mps"
+        else:
+            args.device = "cpu"
     device = torch.device(args.device)
+
+    # Device-specific settings
+    use_cuda = device.type == "cuda"
+    use_mps = device.type == "mps"
+    amp_dtype = torch.bfloat16 if use_cuda else torch.float16
+
+    if use_cuda:
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+        torch.backends.cudnn.benchmark = True
+    torch.manual_seed(42)
+
+    logging.info(f"Using device: {device} (dtype: {amp_dtype})")
     
     # Datasets
     logging.info("Loading datasets...")
@@ -144,7 +161,7 @@ def main():
         batch_size=args.bs,
         shuffle=True,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=use_cuda,
         drop_last=True,
         prefetch_factor=args.prefetch_factor,
         collate_fn=collate_depth_multiview,  # Multi-view collate for training
@@ -156,7 +173,7 @@ def main():
         batch_size=8,
         shuffle=False,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=use_cuda,
         prefetch_factor=args.prefetch_factor,
         collate_fn=collate_depth,  # Single view collate (handles patch stacking)
     )
@@ -171,15 +188,12 @@ def main():
         model_name=args.model,
         img_size=args.global_img_size,
         pretrained=True,
-    ).to(device)
-    
-    # Convert to bfloat16
-    model = model.to(torch.bfloat16)
-    model = torch.compile(model)
-    
+    ).to(device, dtype=amp_dtype)
+    if use_cuda:
+        model = torch.compile(model)
+
     # SIGReg module (same as in run_JEPA.py)
-    sigreg = SIGReg().to(device)
-    sigreg = sigreg.to(torch.bfloat16)
+    sigreg = SIGReg().to(device, dtype=amp_dtype)
     
     # Loss functions
     depth_loss_fn = ScaleInvariantLoss(lambd=0.5)
@@ -231,20 +245,20 @@ def main():
             # depth_views: List of (B, 1, H, W) - matching depth maps
             
             # Separate global and local views by size
-            global_imgs = [v.to(device, dtype=torch.bfloat16, non_blocking=True) 
+            global_imgs = [v.to(device, dtype=amp_dtype, non_blocking=use_cuda) 
                           for v in img_views if v.shape[-1] == args.global_img_size]
-            local_imgs = [v.to(device, dtype=torch.bfloat16, non_blocking=True)
+            local_imgs = [v.to(device, dtype=amp_dtype, non_blocking=use_cuda)
                          for v in img_views if v.shape[-1] == args.local_img_size]
             
-            global_depths = [v.to(device, dtype=torch.bfloat16, non_blocking=True)
+            global_depths = [v.to(device, dtype=amp_dtype, non_blocking=use_cuda)
                             for v in depth_views if v.shape[-1] == args.global_img_size]
-            local_depths = [v.to(device, dtype=torch.bfloat16, non_blocking=True)
+            local_depths = [v.to(device, dtype=amp_dtype, non_blocking=use_cuda)
                            for v in depth_views if v.shape[-1] == args.local_img_size]
             
             all_imgs = global_imgs + local_imgs
             all_depths = global_depths + local_depths
             
-            with autocast(device_type="cuda", dtype=torch.bfloat16):
+            with autocast(device_type=device.type, dtype=amp_dtype):
                 # Forward pass for all views
                 all_pred_depths = []
                 all_embeddings = []
@@ -323,10 +337,10 @@ def main():
             # Validation loader now returns patch_counts for each batch
             for images, depths, patch_counts, shapes in tqdm.tqdm(val_loader, desc="Validation"):
                 # images: (Total_Patches, 3, H, W)
-                images = images.to(device, dtype=torch.bfloat16, non_blocking=True)
-                depths = depths.to(device, dtype=torch.bfloat16, non_blocking=True)
+                images = images.to(device, dtype=amp_dtype, non_blocking=use_cuda)
+                depths = depths.to(device, dtype=amp_dtype, non_blocking=use_cuda)
                 
-                with autocast(device_type="cuda", dtype=torch.bfloat16):
+                with autocast(device_type=device.type, dtype=amp_dtype):
                     pred = model(images, return_embedding=False)
                 
                 # Iterate through images in the batch by slicing using patch_counts

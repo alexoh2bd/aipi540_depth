@@ -32,7 +32,8 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default="inference_results", help="Output directory")
     parser.add_argument("--patch_size", type=int, default=224, help="Patch size for chunking (model input size)")
     parser.add_argument("--overlap", type=int, default=32, help="Overlap between patches for smoother blending")
-    parser.add_argument("--device", type=str, default="cuda", help="Device to run inference on")
+    parser.add_argument("--device", type=str, default=None,
+                        help="Device to use (auto-detects cuda > mps if omitted)")
     parser.add_argument("--model_name", type=str, default="vit_small_patch16_224.augreg_in21k")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for processing patches")
     parser.add_argument("--colormap", type=str, default="inferno", help="Colormap for depth visualization")
@@ -40,16 +41,16 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_model(model_path, model_name, device):
+def load_model(model_path, model_name, device, amp_dtype):
     """Load the trained ViT depth model."""
     print(f"Loading model from {model_path}")
-    
+
     checkpoint = torch.load(model_path, map_location=device)
     if "model_state_dict" in checkpoint:
         state_dict = checkpoint["model_state_dict"]
     else:
         state_dict = checkpoint
-    
+
     # Remove _orig_mod prefix if present (from torch.compile)
     new_state_dict = {}
     for k, v in state_dict.items():
@@ -57,25 +58,25 @@ def load_model(model_path, model_name, device):
             new_state_dict[k.replace("_orig_mod.", "")] = v
         else:
             new_state_dict[k] = v
-    
+
     # Count decoder layers to determine num_upsample
     decoder_layers = [k for k in new_state_dict.keys() if k.startswith("decoder.net.")]
     num_upsample = len(set(k.split('.')[2] for k in decoder_layers))
     if num_upsample == 0:
         num_upsample = 5  # Default fallback
     print(f"Detected {num_upsample}-layer decoder in checkpoint")
-    
+
     model = DepthViT(
         model_name=model_name,
         img_size=224,  # Standard ViT patch size
         pretrained=True,
         num_upsample=num_upsample
     ).to(device)
-    
+
     model.load_state_dict(new_state_dict, strict=True)
-    model.to(torch.bfloat16)
+    model.to(amp_dtype)
     model.eval()
-    
+
     return model
 
 
@@ -252,16 +253,17 @@ def visualize_depth(image_path, depth_map, save_path, colormap='inferno'):
     print(f"Saved visualization to {save_path}")
 
 
-def run_inference(model, image_tensor, args, device):
+def run_inference(model, image_tensor, args, device, amp_dtype):
     """
     Run inference on an arbitrary-sized image.
-    
+
     Args:
         model: Trained ViT depth model
         image_tensor: (C, H, W) preprocessed image tensor
         args: Command line arguments
         device: Torch device
-        
+        amp_dtype: dtype for mixed precision
+
     Returns:
         depth_map: (1, H, W) predicted depth map
     """
@@ -276,14 +278,14 @@ def run_inference(model, image_tensor, args, device):
     print(f"Created {len(patches)} patches with {args.overlap}px overlap")
     
     # Stack patches for batched inference
-    patches_tensor = torch.stack(patches).to(device, dtype=torch.bfloat16)
+    patches_tensor = torch.stack(patches).to(device, dtype=amp_dtype)
     
     # Run inference in batches
     depth_patches = []
     with torch.no_grad():
         for i in range(0, len(patches_tensor), args.batch_size):
             batch = patches_tensor[i:i + args.batch_size]
-            with autocast(device_type="cuda", dtype=torch.bfloat16):
+            with autocast(device_type=device.type, dtype=amp_dtype):
                 batch_depth = model(batch, return_embedding=False)
             depth_patches.extend([d for d in batch_depth])
     
@@ -295,15 +297,15 @@ def run_inference(model, image_tensor, args, device):
     return depth_map
 
 
-def process_single_image(model, image_path, args, device):
+def process_single_image(model, image_path, args, device, amp_dtype):
     """Process a single image and save results."""
     print(f"\nProcessing: {image_path}")
-    
+
     # Preprocess
     image_tensor, original_size = preprocess_image(image_path)
-    
+
     # Run inference
-    depth_map = run_inference(model, image_tensor, args, device)
+    depth_map = run_inference(model, image_tensor, args, device, amp_dtype)
     
     # Postprocess (crop to original size)
     depth_map = postprocess_depth(depth_map, original_size)
@@ -326,17 +328,28 @@ def process_single_image(model, image_path, args, device):
 
 def main():
     args = parse_args()
+
+    # Auto-detect device
+    if args.device is None:
+        if torch.cuda.is_available():
+            args.device = "cuda"
+        elif torch.backends.mps.is_available():
+            args.device = "mps"
+        else:
+            args.device = "cpu"
     device = torch.device(args.device)
-    
+    amp_dtype = torch.bfloat16 if device.type == "cuda" else torch.float16
+    print(f"Using device: {device} (dtype: {amp_dtype})")
+
     os.makedirs(args.output_dir, exist_ok=True)
-    
+
     # Load model
-    model = load_model(args.model_path, args.model_name, device)
-    
+    model = load_model(args.model_path, args.model_name, device, amp_dtype)
+
     # Check if input is file or directory
     if os.path.isfile(args.image_path):
         # Single image
-        process_single_image(model, args.image_path, args, device)
+        process_single_image(model, args.image_path, args, device, amp_dtype)
     elif os.path.isdir(args.image_path):
         # Directory of images
         image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
@@ -344,13 +357,13 @@ def main():
             f for f in os.listdir(args.image_path)
             if os.path.splitext(f)[1].lower() in image_extensions
         ]
-        
+
         print(f"Found {len(image_files)} images in {args.image_path}")
-        
+
         for image_file in sorted(image_files):
             image_path = os.path.join(args.image_path, image_file)
             try:
-                process_single_image(model, image_path, args, device)
+                process_single_image(model, image_path, args, device, amp_dtype)
             except Exception as e:
                 print(f"Error processing {image_file}: {e}")
                 continue

@@ -39,7 +39,7 @@ uv run train --naive --evaluate
 uv run train --classic --evaluate
 
 # Train the deep learning model (LeJEPA + ViT)
-uv run train --deeplearning --epochs 50 --bs 16 --wandb
+uv run train --deeplearning --epochs 50 --bs 16
 
 # Evaluate a trained model
 uv run evaluate --model_path checkpoints/depth_jepa_vit_small.pt
