@@ -37,9 +37,7 @@ app = Flask(__name__)
 
 # ── Manual CORS (no flask-cors dependency) ───────────────────────────────────
 
-ALLOWED_ORIGINS = {
-    "https://aipi540-frontend.vercel.app",
-}
+ALLOWED_ORIGIN = "https://aipi540-frontend.vercel.app"
 
 
 @app.before_request
@@ -47,23 +45,19 @@ def handle_preflight():
     """Return 200 for all OPTIONS preflight requests."""
     if request.method == "OPTIONS":
         response = app.make_default_options_response()
-        origin = request.headers.get("Origin", "")
-        if origin in ALLOWED_ORIGINS:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-            response.headers["Access-Control-Max-Age"] = "86400"
+        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Max-Age"] = "86400"
         return response
 
 
 @app.after_request
 def add_cors_headers(response):
     """Add CORS headers to every response."""
-    origin = request.headers.get("Origin", "")
-    if origin in ALLOWED_ORIGINS:
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return response
 
 
@@ -128,7 +122,7 @@ def load_models():
             model = DepthViT(
                 model_name="vit_small_patch16_224.augreg_in21k",
                 img_size=224,
-                pretrained=False,
+                pretrained=True,
                 num_upsample=num_upsample,
             )
             model.load_state_dict(clean, strict=True)
@@ -219,34 +213,31 @@ def infer_rf(pil_image, rf_model, patch_size=32):
     return pred_map
 
 
-def infer_deeplearning(pil_image, model, patch_size=224, overlap=32, batch_size=16):
-    """ViT inference with patch chunking and blended stitching."""
+def infer_deeplearning(pil_image, model):
+    """ViT inference — single 224x224 forward pass, resized back to original dims."""
     import torch
-    from torch.amp import autocast
+    import torch.nn.functional as F
     from torchvision import transforms
-    from src.test.inference import chunk_image, stitch_patches
+
+    W_orig, H_orig = pil_image.size
 
     normalize = transforms.Compose([
+        transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    W_orig, H_orig = pil_image.size
-    tensor = normalize(pil_image)  # (3, H, W)
+    tensor = normalize(pil_image).unsqueeze(0).to(device, dtype=amp_dtype)  # (1, 3, 224, 224)
 
-    patches, positions, padded_shape = chunk_image(tensor, patch_size, overlap)
-    patches_tensor = torch.stack(patches).to(device, dtype=amp_dtype)
-
-    depth_patches = []
     with torch.no_grad():
-        for i in range(0, len(patches_tensor), batch_size):
-            batch = patches_tensor[i:i + batch_size]
-            with autocast(device_type=device.type, dtype=amp_dtype):
-                out = model(batch, return_embedding=False)
-            depth_patches.extend(list(out))
+        depth = model(tensor, return_embedding=False)  # (1, 1, 224, 224)
 
-    depth_map = stitch_patches(depth_patches, positions, padded_shape, patch_size, overlap)
-    return depth_map[0, :H_orig, :W_orig].cpu().float().numpy()
+    # Resize depth map back to original dimensions
+    depth = F.interpolate(
+        depth.float(), size=(H_orig, W_orig), mode="bilinear", align_corners=False
+    )
+
+    return depth[0, 0].cpu().numpy()
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
