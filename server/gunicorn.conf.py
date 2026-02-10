@@ -1,6 +1,6 @@
 """Gunicorn configuration for depth estimation server."""
 
-bind = "0.0.0.0:8000"
+bind = "127.0.0.1:8000"
 
 # Single worker to avoid duplicating GPU model in memory.
 # Threads handle concurrent requests sharing the same model.
