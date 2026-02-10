@@ -3,12 +3,14 @@ Classical (non-deep-learning) baseline for depth estimation.
 
 Uses a Random Forest regressor trained on hand-crafted image features
 to predict per-patch mean depth. Features include color statistics,
-gradient magnitudes, and spatial position.
+gradient magnitudes, texture descriptors, and spatial position.
 
-This satisfies the rubric requirement for a classical ML model.
+At evaluation time, the model predicts depth for every patch in the test
+images and tiles them back into full-resolution depth maps for proper
+pixel-level metric computation.
 
 Usage:
-    uv run train --classic [--save_path checkpoints/classic_rf.pt]
+    uv run train --classic [--save_path checkpoints/classic_rf.joblib] [--evaluate]
 """
 
 import sys
@@ -46,6 +48,13 @@ def extract_features(img_arr, row_frac, col_frac):
     """
     Extract hand-crafted features from an RGB image patch.
 
+    Features (21 total):
+        - Color statistics: mean, std, 25th/75th percentile per RGB channel (12)
+        - Gradient information: magnitude mean/std/max on grayscale (3)
+        - Spatial position: row fraction, column fraction (2)
+        - Intensity statistics: grayscale mean, std (2)
+        - Texture: Laplacian variance (edge density), local entropy approximation (2)
+
     Args:
         img_arr: (H, W, 3) numpy array, float [0, 1]
         row_frac: vertical position fraction [0, 1]
@@ -56,7 +65,7 @@ def extract_features(img_arr, row_frac, col_frac):
     """
     features = []
 
-    # Color statistics per channel
+    # Color statistics per channel (12 features)
     for c in range(3):
         channel = img_arr[:, :, c]
         features.extend([
@@ -66,7 +75,7 @@ def extract_features(img_arr, row_frac, col_frac):
             np.percentile(channel, 75),
         ])
 
-    # Grayscale gradient magnitudes
+    # Grayscale gradient magnitudes (3 features)
     gray = img_arr.mean(axis=2)
     gy, gx = np.gradient(gray)
     grad_mag = np.sqrt(gx**2 + gy**2)
@@ -76,14 +85,28 @@ def extract_features(img_arr, row_frac, col_frac):
         grad_mag.max(),
     ])
 
-    # Spatial position (strong prior: closer objects at bottom)
+    # Spatial position (2 features) -- strong prior: closer objects at bottom
     features.extend([row_frac, col_frac])
 
-    # Intensity statistics
+    # Intensity statistics (2 features)
     features.extend([
         gray.mean(),
         gray.std(),
     ])
+
+    # Texture: Laplacian variance (edge density indicator) (1 feature)
+    laplacian = (
+        4 * gray[1:-1, 1:-1]
+        - gray[:-2, 1:-1] - gray[2:, 1:-1]
+        - gray[1:-1, :-2] - gray[1:-1, 2:]
+    )
+    features.append(laplacian.var() if laplacian.size > 0 else 0.0)
+
+    # Texture: local entropy approximation via histogram uniformity (1 feature)
+    hist, _ = np.histogram(gray, bins=16, range=(0, 1))
+    hist = hist / hist.sum()
+    entropy = -np.sum(hist[hist > 0] * np.log2(hist[hist > 0]))
+    features.append(entropy)
 
     return np.array(features, dtype=np.float32)
 
@@ -126,6 +149,71 @@ def build_dataset(split, patch_size, max_samples):
     return np.array(X_list), np.array(y_list)
 
 
+def evaluate_full_images(rf, patch_size):
+    """
+    Evaluate the Random Forest on full test images by tiling patch predictions
+    back into full-resolution depth maps, then computing pixel-level metrics.
+    """
+    ds = DepthDataset(split="test", global_img_size=224, multi_view=False)
+
+    metrics_acc = {"abs_rel": 0.0, "sq_diff": 0.0, "n_pixels": 0,
+                   "delta1": 0.0, "delta2": 0.0, "delta3": 0.0}
+
+    for idx in tqdm(range(len(ds.samples)), desc="Evaluating (full images)"):
+        img_path, depth_path = ds.samples[idx]
+        img = np.array(Image.open(img_path).convert("RGB"), dtype=np.float32) / 255.0
+        depth_gt = np.array(Image.open(depth_path), dtype=np.float32) / ds.depth_max
+
+        H, W = img.shape[:2]
+        pred_map = np.zeros((H, W), dtype=np.float32)
+
+        # Predict per-patch and tile into full image
+        for row in range(0, H - patch_size + 1, patch_size):
+            for col in range(0, W - patch_size + 1, patch_size):
+                img_patch = img[row:row+patch_size, col:col+patch_size]
+                row_frac = (row + patch_size / 2) / H
+                col_frac = (col + patch_size / 2) / W
+
+                feat = extract_features(img_patch, row_frac, col_frac).reshape(1, -1)
+                pred_val = rf.predict(feat)[0]
+                pred_map[row:row+patch_size, col:col+patch_size] = pred_val
+
+        # Handle remaining pixels at edges (if image isn't evenly divisible)
+        # Fill with nearest patch prediction
+        last_row = (H // patch_size) * patch_size
+        last_col = (W // patch_size) * patch_size
+        if last_row < H:
+            pred_map[last_row:, :last_col] = pred_map[last_row-1:last_row, :last_col]
+        if last_col < W:
+            pred_map[:last_row, last_col:] = pred_map[:last_row, last_col-1:last_col]
+        if last_row < H and last_col < W:
+            pred_map[last_row:, last_col:] = pred_map[last_row-1, last_col-1]
+
+        # Convert to tensors and compute metrics
+        pred_t = torch.from_numpy(pred_map).unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
+        gt_t = torch.from_numpy(depth_gt).unsqueeze(0).unsqueeze(0).clamp(min=1e-6)
+
+        m = compute_metrics(pred_t, gt_t)
+        metrics_acc["abs_rel"] += m["abs_rel_sum"]
+        metrics_acc["sq_diff"] += m["sq_diff_sum"]
+        metrics_acc["delta1"] += m["delta1_sum"]
+        metrics_acc["delta2"] += m["delta2_sum"]
+        metrics_acc["delta3"] += m["delta3_sum"]
+        metrics_acc["n_pixels"] += m["n_pixels"]
+
+    n = metrics_acc["n_pixels"]
+    print("\n" + "=" * 50)
+    print("CLASSICAL ML BASELINE RESULTS (Full Image)")
+    print("=" * 50)
+    print(f"  AbsRel:        {metrics_acc['abs_rel'] / n:.4f}")
+    print(f"  RMSE:          {(metrics_acc['sq_diff'] / n) ** 0.5:.4f}")
+    print(f"  Delta < 1.25:  {metrics_acc['delta1'] / n:.4f}")
+    print(f"  Delta < 1.25²: {metrics_acc['delta2'] / n:.4f}")
+    print(f"  Delta < 1.25³: {metrics_acc['delta3'] / n:.4f}")
+
+    return metrics_acc
+
+
 def main():
     args = parse_args()
     os.makedirs(os.path.dirname(args.save_path) if os.path.dirname(args.save_path) else ".", exist_ok=True)
@@ -152,25 +240,23 @@ def main():
     train_mse = np.mean((train_pred - y_train) ** 2)
     print(f"Training MSE: {train_mse:.6f}")
 
+    # Feature importances
+    feature_names = []
+    for c_name in ["R", "G", "B"]:
+        feature_names.extend([f"{c_name}_mean", f"{c_name}_std", f"{c_name}_p25", f"{c_name}_p75"])
+    feature_names.extend(["grad_mean", "grad_std", "grad_max"])
+    feature_names.extend(["row_frac", "col_frac"])
+    feature_names.extend(["gray_mean", "gray_std"])
+    feature_names.extend(["laplacian_var", "entropy"])
+
+    importances = rf.feature_importances_
+    sorted_idx = np.argsort(importances)[::-1]
+    print("\nFeature Importances (top 10):")
+    for rank, i in enumerate(sorted_idx[:10]):
+        print(f"  {rank+1}. {feature_names[i]:15s} {importances[i]:.4f}")
+
     if args.evaluate:
-        print("\nBuilding test features...")
-        X_test, y_test = build_dataset("test", args.patch_size, args.max_samples)
-        print(f"Test set: {X_test.shape[0]} patches")
-
-        test_pred = rf.predict(X_test)
-
-        # Convert to tensors for metric computation
-        pred_t = torch.tensor(test_pred).float().view(-1, 1, 1, 1)
-        gt_t = torch.tensor(y_test).float().view(-1, 1, 1, 1)
-        m = compute_metrics(pred_t, gt_t)
-
-        n = m["n_pixels"]
-        print("\n=== Classical ML Baseline Results ===")
-        print(f"Abs Rel: {m['abs_rel_sum'] / n:.4f}")
-        print(f"RMSE:    {(m['sq_diff_sum'] / n) ** 0.5:.4f}")
-        print(f"Delta1:  {m['delta1_sum'] / n:.4f}")
-        print(f"Delta2:  {m['delta2_sum'] / n:.4f}")
-        print(f"Delta3:  {m['delta3_sum'] / n:.4f}")
+        evaluate_full_images(rf, args.patch_size)
 
 
 if __name__ == "__main__":
