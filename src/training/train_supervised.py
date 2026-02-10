@@ -51,6 +51,8 @@ def parse_args():
     parser.add_argument("--sigreg_weight", type=float, default=0.1, help="Weight for SIGReg loss")
     parser.add_argument("--neighborhoods", type=str, default=None, 
                        help="Comma-separated list of neighborhood IDs, e.g. '0,1,2'")
+    parser.add_argument("--freeze_encoder", action="store_true",
+                        help="Freeze ViT encoder (only train decoder + projection head)")
     parser.add_argument("--wandb", action="store_true", help="Enable W&B logging")
     parser.add_argument("--save_path", type=str, default="checkpoints/depth_model2.pt")
     return parser.parse_args()
@@ -134,7 +136,13 @@ def main():
         model_name=args.model,
         img_size=args.img_size,
         pretrained=True,
+        freeze_encoder=args.freeze_encoder,
     ).to(device)
+
+    if args.freeze_encoder:
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in model.parameters())
+        logging.info(f"Encoder frozen: training {trainable:,} / {total:,} parameters ({100*trainable/total:.1f}%)")
     
     model = model.to(amp_dtype)
     
