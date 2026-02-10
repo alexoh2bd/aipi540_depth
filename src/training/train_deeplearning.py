@@ -18,6 +18,11 @@ import os
 # Add project root to sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), "../.."))
 
+# MPS fallback: timm uses bicubic+antialias interpolation for position embedding
+# resampling, whose backward pass isn't implemented on MPS yet.
+# Must be set before importing torch.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -84,7 +89,8 @@ def parse_args():
     parser.add_argument("--global_img_size", type=int, default=224)
     parser.add_argument("--local_img_size", type=int, default=96)
     parser.add_argument("--model", type=str, default="vit_small_patch16_224.augreg_in21k")
-    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--device", type=str, default=None,
+                        help="Device to use (auto-detects cuda > mps if omitted)")
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--grad_accum", type=int, default=1)
     parser.add_argument("--prefetch_factor", type=int, default=4)
@@ -105,7 +111,7 @@ def parse_args():
     parser.add_argument("--neighborhoods", type=str, default=None,
                        help="Comma-separated list of neighborhood IDs")
     parser.add_argument("--wandb", action="store_true", help="Enable W&B logging")
-    parser.add_argument("--save_path", type=str, default="checkpoints/depth_jepa2.pt")
+    parser.add_argument("--save_path", type=str, default="checkpoints/deeplearning.pt")
     # parser.add_argument("--detach", type=str, default=True)
     return parser.parse_args()
 
@@ -113,12 +119,35 @@ def parse_args():
 def main():
     args = parse_args()
     
-    torch.backends.cuda.enable_flash_sdp(True)
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
-    torch.backends.cudnn.benchmark = True
-    torch.manual_seed(42)
-    
+    # Auto-detect device
+    if args.device is None:
+        if torch.cuda.is_available():
+            args.device = "cuda"
+        elif torch.backends.mps.is_available():
+            args.device = "mps"
+        else:
+            args.device = "cpu"
     device = torch.device(args.device)
+
+    # Device-specific settings
+    use_cuda = device.type == "cuda"
+    use_mps = device.type == "mps"
+    # MPS has no tensor cores, so float16 gives no speedup and causes NaN
+    # in loss functions that use log/square (e.g. ScaleInvariantLoss).
+    if use_cuda:
+        amp_dtype = torch.bfloat16
+    elif use_mps:
+        amp_dtype = torch.float32
+    else:
+        amp_dtype = torch.float32
+
+    if use_cuda:
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+        torch.backends.cudnn.benchmark = True
+    torch.manual_seed(42)
+
+    logging.info(f"Using device: {device} (dtype: {amp_dtype})")
     
     # Datasets
     logging.info("Loading datasets...")
@@ -144,7 +173,7 @@ def main():
         batch_size=args.bs,
         shuffle=True,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=use_cuda,
         drop_last=True,
         prefetch_factor=args.prefetch_factor,
         collate_fn=collate_depth_multiview,  # Multi-view collate for training
@@ -156,7 +185,7 @@ def main():
         batch_size=8,
         shuffle=False,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=use_cuda,
         prefetch_factor=args.prefetch_factor,
         collate_fn=collate_depth,  # Single view collate (handles patch stacking)
     )
@@ -171,15 +200,12 @@ def main():
         model_name=args.model,
         img_size=args.global_img_size,
         pretrained=True,
-    ).to(device)
-    
-    # Convert to bfloat16
-    model = model.to(torch.bfloat16)
-    model = torch.compile(model)
-    
+    ).to(device, dtype=amp_dtype)
+    if use_cuda:
+        model = torch.compile(model)
+
     # SIGReg module (same as in run_JEPA.py)
-    sigreg = SIGReg().to(device)
-    sigreg = sigreg.to(torch.bfloat16)
+    sigreg = SIGReg().to(device, dtype=amp_dtype)
     
     # Loss functions
     depth_loss_fn = ScaleInvariantLoss(lambd=0.5)
@@ -207,12 +233,12 @@ def main():
     )
     
     # W&B
-    # if args.wandb:
-    wandb.init(
-        project="AIPI_540_Depth_JEPA",
-        name=f"jepa_{args.model.split('.')[0]}_V{args.V_global}+{args.V_local}",
-        config=vars(args),
-    )
+    if args.wandb:
+        wandb.init(
+            project="AIPI_540_Depth_JEPA",
+            name=f"jepa_{args.model.split('.')[0]}_V{args.V_global}+{args.V_local}",
+            config=vars(args),
+        )
     
     # Training loop
     global_step = 0
@@ -231,20 +257,20 @@ def main():
             # depth_views: List of (B, 1, H, W) - matching depth maps
             
             # Separate global and local views by size
-            global_imgs = [v.to(device, dtype=torch.bfloat16, non_blocking=True) 
+            global_imgs = [v.to(device, dtype=amp_dtype, non_blocking=use_cuda) 
                           for v in img_views if v.shape[-1] == args.global_img_size]
-            local_imgs = [v.to(device, dtype=torch.bfloat16, non_blocking=True)
+            local_imgs = [v.to(device, dtype=amp_dtype, non_blocking=use_cuda)
                          for v in img_views if v.shape[-1] == args.local_img_size]
             
-            global_depths = [v.to(device, dtype=torch.bfloat16, non_blocking=True)
+            global_depths = [v.to(device, dtype=amp_dtype, non_blocking=use_cuda)
                             for v in depth_views if v.shape[-1] == args.global_img_size]
-            local_depths = [v.to(device, dtype=torch.bfloat16, non_blocking=True)
+            local_depths = [v.to(device, dtype=amp_dtype, non_blocking=use_cuda)
                            for v in depth_views if v.shape[-1] == args.local_img_size]
             
             all_imgs = global_imgs + local_imgs
             all_depths = global_depths + local_depths
             
-            with autocast(device_type="cuda", dtype=torch.bfloat16):
+            with autocast(device_type=device.type, dtype=amp_dtype):
                 # Forward pass for all views
                 all_pred_depths = []
                 all_embeddings = []
@@ -300,8 +326,8 @@ def main():
                     "train/sigreg_loss": sigreg_loss.item(),
                     "train/lr": optimizer.param_groups[0]["lr"],
                 }
-                # if args.wandb:
-                wandb.log(log_dict, step=global_step)
+                if args.wandb:
+                    wandb.log(log_dict, step=global_step)
                 pbar.set_postfix(
                     depth=depth_loss.item(),
                     jepa=jepa_loss.item(),
@@ -316,18 +342,20 @@ def main():
         
         # Validation
         model.eval()
+        if use_mps:
+            torch.mps.synchronize()
+            torch.mps.empty_cache()
         val_metrics = {"abs_rel": 0, "rmse": 0, "delta1": 0, "delta2": 0, "delta3": 0}
         num_val_images = 0
-        
+
         with torch.inference_mode():
             # Validation loader now returns patch_counts for each batch
             for images, depths, patch_counts, shapes in tqdm.tqdm(val_loader, desc="Validation"):
                 # images: (Total_Patches, 3, H, W)
-                images = images.to(device, dtype=torch.bfloat16, non_blocking=True)
-                depths = depths.to(device, dtype=torch.bfloat16, non_blocking=True)
-                
-                with autocast(device_type="cuda", dtype=torch.bfloat16):
-                    pred = model(images, return_embedding=False)
+                images = images.to(device, dtype=amp_dtype, non_blocking=use_cuda)
+                depths = depths.to(device, dtype=amp_dtype, non_blocking=use_cuda)
+
+                pred = model(images, return_embedding=False)
                 
                 # Iterate through images in the batch by slicing using patch_counts
                 current_idx = 0
@@ -363,8 +391,8 @@ def main():
         logging.info(f"Val - AbsRel: {val_metrics['abs_rel']:.4f}, RMSE: {val_metrics['rmse']:.4f}, "
                     f"δ1: {val_metrics['delta1']:.4f}")
         
-        # if args.wandb:
-        wandb.log({f"val/{k}": v for k, v in val_metrics.items()}, step=global_step)
+        if args.wandb:
+            wandb.log({f"val/{k}": v for k, v in val_metrics.items()}, step=global_step)
         
         # Save best model
         if val_metrics["delta1"] > best_delta1:
@@ -387,8 +415,8 @@ def main():
     # )    
 
 
-    # if args.wandb:
-    wandb.finish()
+    if args.wandb:
+        wandb.finish()
     
     logging.info(f"Training complete. Best δ1: {best_delta1:.4f}")
 

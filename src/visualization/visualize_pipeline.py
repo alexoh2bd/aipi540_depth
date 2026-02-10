@@ -169,7 +169,8 @@ def visualize_with_predictions(dataset, model, device, idx=0, save_path="pipelin
     with torch.no_grad():
         predictions = []
         for img in img_views:
-            img_batch = img.unsqueeze(0).to(device, dtype=torch.bfloat16)
+            dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+            img_batch = img.unsqueeze(0).to(device, dtype=dtype)
             pred = model(img_batch, return_embedding=False)
             predictions.append(pred.squeeze(0).cpu().float())
     
@@ -258,15 +259,21 @@ def main():
         print(f"Loading model from {args.checkpoint}...")
         from src.models.model import DepthViT
         
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+        dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+
         checkpoint = torch.load(args.checkpoint, map_location=device)
         model = DepthViT(
             model_name="vit_small_patch16_224.augreg_in21k",
             img_size=224,
         ).to(device)
         model.load_state_dict(checkpoint["model_state_dict"])
-        model = model.to(torch.bfloat16)
+        model = model.to(dtype)
         
         pred_output = args.output.replace(".png", "_predictions.png")
         visualize_with_predictions(dataset, model, device, idx=args.sample_idx, save_path=pred_output)

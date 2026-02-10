@@ -20,7 +20,7 @@ echo "GPU: $SLURM_GPUS"
 echo "Node: $(hostname)"
 
 uv run evaluate \
-    --model_path checkpoints/depth_jepa_vit_small2.pt \
+    --model_path checkpoints/deeplearning.pt \
     --save_dir test_results \
     --num_workers 4 \
     --img_size 1024

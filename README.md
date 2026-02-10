@@ -13,7 +13,7 @@ uv sync
 # 2. Download the DDOS dataset (~136 GB)
 uv run setup
 
-# 3. Train a model
+# 3. Train a model (see Quick Start for all options)
 uv run train --deeplearning --epochs 50 --bs 16
 ```
 
@@ -38,25 +38,41 @@ uv run train --naive --evaluate
 # Train the classical ML baseline (random forest)
 uv run train --classic --evaluate
 
-# Train the deep learning model (LeJEPA + ViT)
-uv run train --deeplearning --epochs 50 --bs 16 --wandb
+# Train the supervised depth model (single-view, simpler and faster)
+uv run train --supervised --epochs 50 --bs 16
 
-# Evaluate a trained model
-uv run evaluate --model_path checkpoints/depth_jepa_vit_small.pt
+# Train the LeJEPA multi-view model (richer features, slower)
+uv run train --deeplearning --epochs 50 --bs 16
 
-# Run inference on an image
-uv run infer --model_path checkpoints/depth_jepa_vit_small.pt --image_path photo.jpg
+# Evaluate a trained model on the test set
+uv run evaluate --model_path checkpoints/supervised.pt
+
+# Run inference on a single image (auto-detects model type)
+uv run infer --model_path checkpoints/supervised.pt --image_path photo.jpg
+
+# Inference with other model types
+uv run infer --model_path checkpoints/naive.pt --image_path photo.jpg --naive_mode gradient
+uv run infer --model_path checkpoints/classic.joblib --image_path photo.jpg
 ```
 
 ## Models
 
-This project implements three modeling approaches as required:
+This project implements four modeling approaches:
 
 | Approach       | Command                       | Description                                                                     |
 |----------------|-------------------------------|---------------------------------------------------------------------------------|
 | Naive baseline | `uv run train --naive`        | Predicts the mean training depth for every pixel                                |
 | Classical ML   | `uv run train --classic`      | Random forest on hand-crafted patch features (gradients, color stats, position) |
-| Deep learning  | `uv run train --deeplearning` | ViT encoder + convolutional decoder with LeJEPA multi-view loss                 |
+| Supervised DL  | `uv run train --supervised`   | Single-view depth supervision with SIGReg regularization (ViT or ResNet)        |
+| LeJEPA DL      | `uv run train --deeplearning` | Multi-view self-supervised learning + depth supervision (ViT only)              |
+
+### Supervised vs. LeJEPA: which should I use?
+
+**`--supervised`** trains a standard depth estimation model: one image in, one depth map out, with SIGReg regularization on the encoder embeddings. It supports both ViT and ResNet backbones, trains faster, and is a good starting point or ablation baseline.
+
+**`--deeplearning`** adds LeJEPA multi-view self-supervised learning on top of depth supervision. Each training image is augmented into 2 global crops (224px) and 4 local crops (96px), and the model learns to produce consistent representations across all of them. This is slower to train but encourages richer, view-invariant features. ViT only.
+
+Use `--supervised` if you want a quick, straightforward run. Use `--deeplearning` if you want the full pipeline with self-supervised representation learning.
 
 ## Project Structure
 
@@ -91,6 +107,68 @@ This project implements three modeling approaches as required:
 ├── checkpoints/                # Trained model checkpoints (not tracked)
 └── logs/                       # Training logs (not tracked)
 ```
+
+## Checkpoints
+
+Training saves checkpoints with standardized names under `checkpoints/`:
+
+| Model          | Default path                  | Format  | Contents                                       |
+|----------------|-------------------------------|---------|------------------------------------------------|
+| Naive baseline | `checkpoints/naive.pt`        | PyTorch | `mean_depth` float + metadata                  |
+| Classical ML   | `checkpoints/classic.joblib`  | joblib  | Trained `RandomForestRegressor`                |
+| Supervised DL  | `checkpoints/supervised.pt`   | PyTorch | Model state dict, optimizer, val metrics       |
+| LeJEPA DL      | `checkpoints/deeplearning.pt` | PyTorch | Model state dict, optimizer, val metrics, args |
+
+Override any default with `--save_path`:
+```bash
+uv run train --supervised --save_path checkpoints/my_experiment.pt
+```
+
+The inference script (`uv run infer`) auto-detects the model type from the checkpoint:
+- `.joblib` extension → Random Forest
+- `.pt` with `"type": "naive"` key → Naive baseline
+- Otherwise → ViT deep learning model
+
+## Evaluation & Inference
+
+There are two separate scripts for testing trained models:
+
+### `uv run evaluate` — Quantitative evaluation on the test set
+
+Runs a ViT model over the entire test split, computes pixel-level metrics (AbsRel, RMSE), and compares against a naive gradient baseline. Saves 3 sample visualizations showing original image, ground truth, naive prediction, and model prediction side by side.
+
+```bash
+uv run evaluate --model_path checkpoints/deeplearning.pt
+```
+
+Output goes to `test_results/` by default (override with `--save_dir`).
+
+**Sample output** (`test_results/result_0.png`):
+
+![Evaluate sample](test_results/result_0.png)
+
+### `uv run infer` — Inference on arbitrary images
+
+Runs any model type on your own images (no ground truth needed). Auto-detects the model type from the checkpoint and produces a side-by-side visualization of the input and predicted depth map.
+
+```bash
+# ViT model — chunks into overlapping 224px patches, stitches back
+uv run infer --model_path checkpoints/deeplearning.pt --image_path photo.jpg
+
+# Naive baseline — vertical gradient or constant mean
+uv run infer --model_path checkpoints/naive.pt --image_path photo.jpg --naive_mode gradient
+
+# Random Forest — predicts per-patch depth from hand-crafted features
+uv run infer --model_path checkpoints/classic.joblib --image_path photo.jpg
+```
+
+Output goes to `inference_results/` by default (override with `--output_dir`). Also accepts a directory of images.
+
+**Sample outputs:**
+
+| Naive (gradient)                                      | Random Forest                                | ViT (LeJEPA)                                   |
+|-------------------------------------------------------|----------------------------------------------|------------------------------------------------|
+| ![naive](inference_results/test_gradient/0_depth.png) | ![rf](inference_results/test_rf/0_depth.png) | ![vit](inference_results/test_vit/0_depth.png) |
 
 ## Architecture
 

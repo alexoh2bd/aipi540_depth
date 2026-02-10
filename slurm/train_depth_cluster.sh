@@ -35,4 +35,4 @@ uv run train --deeplearning \
     --V_local 4 \
     --lamb 0.05 \
     --wandb \
-    --save_path checkpoints/depth_jepa_vit_small2.pt
+    --save_path checkpoints/deeplearning.pt

@@ -13,11 +13,16 @@ import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), "../.."))
 
+# MPS fallback: timm uses bicubic+antialias interpolation for position embedding
+# resampling, whose backward pass isn't implemented on MPS yet.
+# Must be set before importing torch.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.amp import autocast, GradScaler
+from torch.amp import autocast
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 import argparse
 import logging
@@ -39,14 +44,17 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--img_size", type=int, default=224)
     parser.add_argument("--model", type=str, default="vit_small_patch16_224.augreg_in21k")
-    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--device", type=str, default=None,
+                        help="Device to use (auto-detects cuda > mps if omitted)")
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--grad_accum", type=int, default=1)
     parser.add_argument("--sigreg_weight", type=float, default=0.1, help="Weight for SIGReg loss")
     parser.add_argument("--neighborhoods", type=str, default=None, 
                        help="Comma-separated list of neighborhood IDs, e.g. '0,1,2'")
+    parser.add_argument("--freeze_encoder", action="store_true",
+                        help="Freeze ViT encoder (only train decoder + projection head)")
     parser.add_argument("--wandb", action="store_true", help="Enable W&B logging")
-    parser.add_argument("--save_path", type=str, default="checkpoints/depth_model2.pt")
+    parser.add_argument("--save_path", type=str, default="checkpoints/supervised.pt")
     return parser.parse_args()
 
 
@@ -54,12 +62,34 @@ def parse_args():
 def main():
     args = parse_args()
     
-    torch.backends.cuda.enable_flash_sdp(True)
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
-    torch.backends.cudnn.benchmark = True
-    torch.manual_seed(42)
-    
+    # Auto-detect device
+    if args.device is None:
+        if torch.cuda.is_available():
+            args.device = "cuda"
+        elif torch.backends.mps.is_available():
+            args.device = "mps"
+        else:
+            args.device = "cpu"
     device = torch.device(args.device)
+
+    use_cuda = device.type == "cuda"
+    use_mps = device.type == "mps"
+    # MPS has no tensor cores, so float16 gives no speedup and causes NaN
+    # in loss functions that use log/square (e.g. ScaleInvariantLoss).
+    if use_cuda:
+        amp_dtype = torch.bfloat16
+    elif use_mps:
+        amp_dtype = torch.float32
+    else:
+        amp_dtype = torch.float32
+
+    if use_cuda:
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+        torch.backends.cudnn.benchmark = True
+    torch.manual_seed(42)
+
+    logging.info(f"Using device: {device} (dtype: {amp_dtype})")
     
     # Parse neighborhoods
     neighborhoods = None
@@ -84,7 +114,7 @@ def main():
         batch_size=args.bs,
         shuffle=True,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=use_cuda,
         drop_last=True,
         collate_fn=collate_depth,
         persistent_workers=args.num_workers > 0,
@@ -94,7 +124,7 @@ def main():
         batch_size=args.bs,
         shuffle=False,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=use_cuda,
         collate_fn=collate_depth,
     )
     
@@ -106,10 +136,15 @@ def main():
         model_name=args.model,
         img_size=args.img_size,
         pretrained=True,
+        freeze_encoder=args.freeze_encoder,
     ).to(device)
+
+    if args.freeze_encoder:
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in model.parameters())
+        logging.info(f"Encoder frozen: training {trainable:,} / {total:,} parameters ({100*trainable/total:.1f}%)")
     
-    # Convert to bfloat16 for efficiency
-    model = model.to(torch.bfloat16)
+    model = model.to(amp_dtype)
     
     # Compile for speed (PyTorch 2.0+)
     # model = torch.compile(model, mode="reduce-overhead")
@@ -154,7 +189,6 @@ def main():
     # Training loop
     global_step = 0
     best_delta1 = 0
-    scaler = GradScaler()
     
     for epoch in range(args.epochs):
         model.train()
@@ -164,10 +198,10 @@ def main():
         optimizer.zero_grad()
         
         for batch_idx, (images, depths, _, _) in enumerate(pbar):
-            images = images.to(device, dtype=torch.bfloat16, non_blocking=True)
-            depths = depths.to(device, dtype=torch.bfloat16, non_blocking=True)
+            images = images.to(device, dtype=amp_dtype, non_blocking=use_cuda)
+            depths = depths.to(device, dtype=amp_dtype, non_blocking=use_cuda)
             
-            with autocast(device_type="cuda", dtype=torch.bfloat16):
+            with autocast(device_type=device.type, dtype=amp_dtype):
                 # Forward
                 pred_depth, embedding = model(images, return_embedding=True)
                 
@@ -211,16 +245,18 @@ def main():
         
         # Validation
         model.eval()
+        if use_mps:
+            torch.mps.synchronize()
+            torch.mps.empty_cache()
         val_acc = {"abs_rel_sum": 0, "sq_diff_sum": 0, "delta1_sum": 0, "delta2_sum": 0, "delta3_sum": 0, "n_pixels": 0}
-        
+
         with torch.inference_mode():
             for images, depths, _, _ in tqdm.tqdm(val_loader, desc="Validation"):
-                images = images.to(device, dtype=torch.bfloat16, non_blocking=True)
-                depths = depths.to(device, dtype=torch.bfloat16, non_blocking=True)
-                
-                with autocast(device_type="cuda", dtype=torch.bfloat16):
-                    pred_depth = model(images, return_embedding=False)
-                
+                images = images.to(device, dtype=amp_dtype, non_blocking=use_cuda)
+                depths = depths.to(device, dtype=amp_dtype, non_blocking=use_cuda)
+
+                pred_depth = model(images, return_embedding=False)
+
                 metrics = compute_metrics(pred_depth, depths)
                 for k, v in metrics.items():
                     val_acc[k] += v

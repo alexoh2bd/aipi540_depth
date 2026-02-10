@@ -4,7 +4,7 @@ Visualize model predictions on validation samples.
 Shows predicted depth vs ground truth for multiple validation images.
 
 Usage:
-    python visualize_predictions.py --checkpoint checkpoints/depth_jepa_vit_small.pt --num_samples 3
+    python visualize_predictions.py --checkpoint checkpoints/supervised.pt --num_samples 3
 """
 
 import torch
@@ -104,8 +104,9 @@ def visualize_validation_predictions(
             img, depth_gt = dataset[idx]
             
             # Add batch dimension and move to device
-            img_batch = img.unsqueeze(0).to(device, dtype=torch.bfloat16)
-            depth_gt = depth_gt.to(device, dtype=torch.bfloat16)
+            dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+            img_batch = img.unsqueeze(0).to(device, dtype=dtype)
+            depth_gt = depth_gt.to(device, dtype=dtype)
             
             # Predict
             pred_depth = model(img_batch, return_embedding=False)
@@ -169,7 +170,7 @@ def visualize_validation_predictions(
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize depth predictions on validation set")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/depth_jepa_vit_small.pt",
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/supervised.pt",
                        help="Path to model checkpoint")
     parser.add_argument("--num_samples", type=int, default=3,
                        help="Number of validation samples to visualize")
@@ -177,8 +178,8 @@ def main():
                        help="Output image path")
     parser.add_argument("--neighborhoods", type=str, default=None,
                        help="Comma-separated neighborhood IDs (default: all)")
-    parser.add_argument("--device", type=str, default="cuda",
-                       help="Device to use (cuda or cpu)")
+    parser.add_argument("--device", type=str, default=None,
+                       help="Device to use (auto-detects cuda > mps if omitted)")
     args = parser.parse_args()
     
     # Check checkpoint exists
@@ -192,11 +193,14 @@ def main():
         neighborhoods = [int(n) for n in args.neighborhoods.split(",")]
     
     # Setup device
-    if args.device == "cuda" and not torch.cuda.is_available():
-        print("CUDA not available, using CPU")
-        device = torch.device("cpu")
-    else:
-        device = torch.device(args.device)
+    if args.device is None:
+        if torch.cuda.is_available():
+            args.device = "cuda"
+        elif torch.backends.mps.is_available():
+            args.device = "mps"
+        else:
+            args.device = "cpu"
+    device = torch.device(args.device)
     
     print(f"Using device: {device}")
     
@@ -232,7 +236,8 @@ def main():
     ).to(device)
     
     model.load_state_dict(checkpoint["model_state_dict"])
-    model = model.to(torch.bfloat16)
+    dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+    model = model.to(dtype)
     model.eval()
     
     print(f"Model loaded. Checkpoint from epoch {checkpoint.get('epoch', 'unknown')}")
