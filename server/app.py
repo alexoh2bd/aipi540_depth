@@ -16,32 +16,56 @@ import logging
 import os
 import sys
 import time
+import traceback
 
 import numpy as np
-import torch
-from torch.amp import autocast
 from flask import Flask, request, jsonify
-from flask_cors import CORS
 from PIL import Image
-from torchvision import transforms
 
 import matplotlib
 matplotlib.use("Agg")
 
-# Add project root to path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.models.model import DepthViT
-from src.test.inference import chunk_image, stitch_patches
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 # ── Flask app ────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
-CORS(app, origins=["https://aipi540-frontend.vercel.app"])
+
+# ── Manual CORS (no flask-cors dependency) ───────────────────────────────────
+
+ALLOWED_ORIGINS = {
+    "https://aipi540-frontend.vercel.app",
+}
+
+
+@app.before_request
+def handle_preflight():
+    """Return 200 for all OPTIONS preflight requests."""
+    if request.method == "OPTIONS":
+        response = app.make_default_options_response()
+        origin = request.headers.get("Origin", "")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+            response.headers["Access-Control-Max-Age"] = "86400"
+        return response
+
+
+@app.after_request
+def add_cors_headers(response):
+    """Add CORS headers to every response."""
+    origin = request.headers.get("Origin", "")
+    if origin in ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
 
 # ── Global state ─────────────────────────────────────────────────────────────
 
@@ -50,14 +74,9 @@ amp_dtype = None
 models = {}
 
 CHECKPOINT_DIR = os.path.join(PROJECT_ROOT, "checkpoints")
-MAX_DIM = 1280  # Cap input size to limit inference time
-
-IMAGENET_NORMALIZE = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
-
+MAX_DIM = 1280
 COLORMAP = matplotlib.colormaps["inferno"]
+
 
 # ── Model loading ────────────────────────────────────────────────────────────
 
@@ -66,50 +85,60 @@ def load_models():
     """Load all available model checkpoints at startup."""
     global device, amp_dtype
 
+    import torch
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     amp_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
     logger.info("Device: %s  dtype: %s", device, amp_dtype)
 
-    # Naive: always available, no checkpoint needed
+    # Naive: always available
     models["naive"] = True
     logger.info("Naive model: ready")
 
     # Random Forest
     rf_path = os.path.join(CHECKPOINT_DIR, "classic.joblib")
     if os.path.isfile(rf_path):
-        import joblib
-        models["rf"] = joblib.load(rf_path)
-        logger.info("RF model: loaded from %s", rf_path)
+        try:
+            import joblib
+            models["rf"] = joblib.load(rf_path)
+            logger.info("RF model: loaded from %s", rf_path)
+        except Exception:
+            logger.exception("Failed to load RF model from %s", rf_path)
     else:
         logger.warning("RF checkpoint not found: %s", rf_path)
 
     # Deep learning (ViT)
     dl_path = os.path.join(CHECKPOINT_DIR, "deeplearning.pt")
     if os.path.isfile(dl_path):
-        checkpoint = torch.load(dl_path, map_location=device, weights_only=False)
-        state_dict = checkpoint.get("model_state_dict", checkpoint)
+        try:
+            from src.models.model import DepthViT
 
-        # Strip _orig_mod. prefix left by torch.compile
-        clean = {}
-        for k, v in state_dict.items():
-            clean[k.removeprefix("_orig_mod.")] = v
+            checkpoint = torch.load(dl_path, map_location=device, weights_only=False)
+            state_dict = checkpoint.get("model_state_dict", checkpoint)
 
-        # Detect decoder depth from checkpoint keys
-        decoder_keys = [k for k in clean if k.startswith("decoder.net.")]
-        num_upsample = len({k.split(".")[2] for k in decoder_keys}) or 4
+            # Strip _orig_mod. prefix left by torch.compile
+            clean = {}
+            for k, v in state_dict.items():
+                clean[k.removeprefix("_orig_mod.")] = v
 
-        model = DepthViT(
-            model_name="vit_small_patch16_224.augreg_in21k",
-            img_size=224,
-            pretrained=False,
-            num_upsample=num_upsample,
-        )
-        model.load_state_dict(clean, strict=True)
-        model.backbone.set_grad_checkpointing(False)  # Not needed at inference
-        model.to(device, dtype=amp_dtype)
-        model.eval()
-        models["deeplearning"] = model
-        logger.info("Deep learning model: loaded (%d-layer decoder)", num_upsample)
+            # Detect decoder depth from checkpoint keys
+            decoder_keys = [k for k in clean if k.startswith("decoder.net.")]
+            num_upsample = len({k.split(".")[2] for k in decoder_keys}) or 4
+
+            model = DepthViT(
+                model_name="vit_small_patch16_224.augreg_in21k",
+                img_size=224,
+                pretrained=False,
+                num_upsample=num_upsample,
+            )
+            model.load_state_dict(clean, strict=True)
+            model.backbone.set_grad_checkpointing(False)
+            model.to(device, dtype=amp_dtype)
+            model.eval()
+            models["deeplearning"] = model
+            logger.info("Deep learning model: loaded (%d-layer decoder)", num_upsample)
+        except Exception:
+            logger.exception("Failed to load deep learning model from %s", dl_path)
     else:
         logger.warning("Deep learning checkpoint not found: %s", dl_path)
 
@@ -119,7 +148,7 @@ def load_models():
 
 def colorize_depth(depth_np):
     """Convert a depth map (H, W) to a base64 PNG data URI."""
-    vmin, vmax = depth_np.min(), depth_np.max()
+    vmin, vmax = float(depth_np.min()), float(depth_np.max())
     if vmax - vmin > 1e-6:
         normalized = (depth_np - vmin) / (vmax - vmin)
     else:
@@ -192,8 +221,18 @@ def infer_rf(pil_image, rf_model, patch_size=32):
 
 def infer_deeplearning(pil_image, model, patch_size=224, overlap=32, batch_size=16):
     """ViT inference with patch chunking and blended stitching."""
+    import torch
+    from torch.amp import autocast
+    from torchvision import transforms
+    from src.test.inference import chunk_image, stitch_patches
+
+    normalize = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
     W_orig, H_orig = pil_image.size
-    tensor = IMAGENET_NORMALIZE(pil_image)  # (3, H, W)
+    tensor = normalize(pil_image)  # (3, H, W)
 
     patches, positions, padded_shape = chunk_image(tensor, patch_size, overlap)
     patches_tensor = torch.stack(patches).to(device, dtype=amp_dtype)
@@ -213,12 +252,21 @@ def infer_deeplearning(pil_image, model, patch_size=224, overlap=32, batch_size=
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
-@app.get("/health")
+@app.route("/", methods=["GET"])
+def root():
+    return jsonify({"status": "ok", "service": "depth-estimation"})
+
+
+@app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "models": list(models.keys()), "device": str(device)})
+    return jsonify({
+        "status": "ok",
+        "models": list(models.keys()),
+        "device": str(device),
+    })
 
 
-@app.get("/models")
+@app.route("/models", methods=["GET"])
 def list_models():
     return jsonify({
         "available": list(models.keys()),
@@ -228,7 +276,7 @@ def list_models():
     })
 
 
-@app.post("/predict-depth")
+@app.route("/predict-depth", methods=["POST"])
 def predict_depth():
     # ── Validate request ──
     if "image" not in request.files:
@@ -236,7 +284,6 @@ def predict_depth():
 
     model_type = request.form.get("model")
     if not model_type:
-        # Default to best available
         model_type = next(
             (m for m in ("deeplearning", "rf", "naive") if m in models), "naive"
         )
@@ -281,7 +328,13 @@ def predict_depth():
 
 # ── Startup ──────────────────────────────────────────────────────────────────
 
-load_models()
+try:
+    load_models()
+except Exception:
+    logger.exception("load_models() crashed — only naive model will be available")
+    models.setdefault("naive", True)
+
+logger.info("Server ready. Available models: %s", list(models.keys()))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
