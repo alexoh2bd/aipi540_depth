@@ -167,19 +167,25 @@ def evaluate_full_images(rf, patch_size):
         H, W = img.shape[:2]
         pred_map = np.zeros((H, W), dtype=np.float32)
 
-        # Predict per-patch and tile into full image
+        # Extract all patch features in one pass, then batch-predict
+        features_list = []
+        coords_list = []
         for row in range(0, H - patch_size + 1, patch_size):
             for col in range(0, W - patch_size + 1, patch_size):
                 img_patch = img[row:row+patch_size, col:col+patch_size]
                 row_frac = (row + patch_size / 2) / H
                 col_frac = (col + patch_size / 2) / W
+                features_list.append(extract_features(img_patch, row_frac, col_frac))
+                coords_list.append((row, col))
 
-                feat = extract_features(img_patch, row_frac, col_frac).reshape(1, -1)
-                pred_val = rf.predict(feat)[0]
-                pred_map[row:row+patch_size, col:col+patch_size] = pred_val
+        # Single batch prediction for all patches in this image
+        X_img = np.array(features_list)
+        preds = rf.predict(X_img)
+
+        for (row, col), pred_val in zip(coords_list, preds):
+            pred_map[row:row+patch_size, col:col+patch_size] = pred_val
 
         # Handle remaining pixels at edges (if image isn't evenly divisible)
-        # Fill with nearest patch prediction
         last_row = (H // patch_size) * patch_size
         last_col = (W // patch_size) * patch_size
         if last_row < H:
@@ -228,7 +234,7 @@ def main():
         max_depth=20,
         n_jobs=-1,
         random_state=42,
-        verbose=1,
+        verbose=0,
     )
     rf.fit(X_train, y_train)
 

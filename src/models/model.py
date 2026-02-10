@@ -161,7 +161,7 @@ class DepthViT(nn.Module):
         patch_tokens = features[:, 1:]  # (B, N, D)
         
         # Reshape patches to spatial grid: (B, N, D) -> (B, D, H, W)
-        patch_features = patch_tokens.transpose(1, 2).reshape(
+        patch_features = patch_tokens.transpose(1, 2).contiguous().reshape(
             B, self.feat_dim, grid_h, grid_w
         )
         
