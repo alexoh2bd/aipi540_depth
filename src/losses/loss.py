@@ -1,5 +1,7 @@
+# Generated with assistance from Claude (Anthropic) via Claude Code
+# https://github.com/anthropics/claude-code
 import torch
-import timm 
+import timm
 import random
 from torch import nn
 import numpy as np

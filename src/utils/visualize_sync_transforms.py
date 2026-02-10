@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Generated with assistance from Claude (Anthropic) via Claude Code
+# https://github.com/anthropics/claude-code
 """
 Visualization script to verify synchronized transforms.
 

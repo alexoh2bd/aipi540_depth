@@ -1,3 +1,5 @@
+# Generated with assistance from Claude (Anthropic) via Claude Code
+# https://github.com/anthropics/claude-code
 """
 Depth Estimation Dataset for DDOS neighborhood data with JEPA-style multi-view support.
 

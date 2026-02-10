@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Generated with assistance from Claude (Anthropic) via Claude Code
+# https://github.com/anthropics/claude-code
 """Quick script to check depth image properties and value ranges."""
 
 from PIL import Image

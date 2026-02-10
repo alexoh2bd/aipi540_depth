@@ -1,3 +1,5 @@
+# Generated with assistance from Claude (Anthropic) via Claude Code
+# https://github.com/anthropics/claude-code
 import torch
 # import torch.nn.functional as F
 from torch.utils.data import Dataset

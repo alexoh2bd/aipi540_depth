@@ -1,3 +1,5 @@
+# Generated with assistance from Claude (Anthropic) via Claude Code
+# https://github.com/anthropics/claude-code
 """Checkpoint saving utilities for training."""
 
 import torch

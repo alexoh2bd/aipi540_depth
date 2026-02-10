@@ -1,3 +1,5 @@
+# Generated with assistance from Claude (Anthropic) via Claude Code
+# https://github.com/anthropics/claude-code
 """
 Inference script for depth estimation on arbitrary-sized images.
 

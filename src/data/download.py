@@ -1,3 +1,5 @@
+# Generated with assistance from Claude (Anthropic) via Claude Code
+# https://github.com/anthropics/claude-code
 """
 Download the DDOS (Depth from Driving Open Scenes) dataset from HuggingFace.
 
