@@ -129,6 +129,47 @@ The inference script (`uv run infer`) auto-detects the model type from the check
 - `.pt` with `"type": "naive"` key → Naive baseline
 - Otherwise → ViT deep learning model
 
+## Evaluation & Inference
+
+There are two separate scripts for testing trained models:
+
+### `uv run evaluate` — Quantitative evaluation on the test set
+
+Runs a ViT model over the entire test split, computes pixel-level metrics (AbsRel, RMSE), and compares against a naive gradient baseline. Saves 3 sample visualizations showing original image, ground truth, naive prediction, and model prediction side by side.
+
+```bash
+uv run evaluate --model_path checkpoints/deeplearning.pt
+```
+
+Output goes to `test_results/` by default (override with `--save_dir`).
+
+**Sample output** (`test_results/result_0.png`):
+
+![Evaluate sample](test_results/result_0.png)
+
+### `uv run infer` — Inference on arbitrary images
+
+Runs any model type on your own images (no ground truth needed). Auto-detects the model type from the checkpoint and produces a side-by-side visualization of the input and predicted depth map.
+
+```bash
+# ViT model — chunks into overlapping 224px patches, stitches back
+uv run infer --model_path checkpoints/deeplearning.pt --image_path photo.jpg
+
+# Naive baseline — vertical gradient or constant mean
+uv run infer --model_path checkpoints/naive.pt --image_path photo.jpg --naive_mode gradient
+
+# Random Forest — predicts per-patch depth from hand-crafted features
+uv run infer --model_path checkpoints/classic.joblib --image_path photo.jpg
+```
+
+Output goes to `inference_results/` by default (override with `--output_dir`). Also accepts a directory of images.
+
+**Sample outputs:**
+
+| Naive (gradient)                                      | Random Forest                                | ViT (LeJEPA)                                   |
+|-------------------------------------------------------|----------------------------------------------|------------------------------------------------|
+| ![naive](inference_results/test_gradient/0_depth.png) | ![rf](inference_results/test_rf/0_depth.png) | ![vit](inference_results/test_vit/0_depth.png) |
+
 ## Architecture
 
 The deep learning model uses a pretrained **ViT-Small** (patch size 16, ImageNet-21k) encoder that produces:
