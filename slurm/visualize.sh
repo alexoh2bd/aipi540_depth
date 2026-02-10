@@ -16,7 +16,7 @@ mkdir -p logs
 
 # Visualization doesn't have a uv script yet, so call directly
 uv run python src/visualization/visualize_predictions.py \
-    --checkpoint checkpoints/depth_jepa_vit_small.pt \
+    --checkpoint checkpoints/deeplearning.pt \
     --num_samples 3 \
     --output validation_predictions.png \
     --device cuda

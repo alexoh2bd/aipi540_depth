@@ -10,7 +10,7 @@ images and tiles them back into full-resolution depth maps for proper
 pixel-level metric computation.
 
 Usage:
-    uv run train --classic [--save_path checkpoints/classic_rf.joblib] [--evaluate]
+    uv run train --classic [--save_path checkpoints/classic.joblib] [--evaluate]
 """
 
 import sys
@@ -31,7 +31,7 @@ from src.utils.metrics import compute_metrics
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train classical ML depth baseline")
-    parser.add_argument("--save_path", type=str, default="checkpoints/classic_rf.joblib")
+    parser.add_argument("--save_path", type=str, default="checkpoints/classic.joblib")
     parser.add_argument("--patch_size", type=int, default=32,
                         help="Patch size for feature extraction")
     parser.add_argument("--max_samples", type=int, default=5000,

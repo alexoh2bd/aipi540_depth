@@ -111,7 +111,7 @@ def parse_args():
     parser.add_argument("--neighborhoods", type=str, default=None,
                        help="Comma-separated list of neighborhood IDs")
     parser.add_argument("--wandb", action="store_true", help="Enable W&B logging")
-    parser.add_argument("--save_path", type=str, default="checkpoints/depth_jepa2.pt")
+    parser.add_argument("--save_path", type=str, default="checkpoints/deeplearning.pt")
     # parser.add_argument("--detach", type=str, default=True)
     return parser.parse_args()
 
@@ -342,18 +342,20 @@ def main():
         
         # Validation
         model.eval()
+        if use_mps:
+            torch.mps.synchronize()
+            torch.mps.empty_cache()
         val_metrics = {"abs_rel": 0, "rmse": 0, "delta1": 0, "delta2": 0, "delta3": 0}
         num_val_images = 0
-        
+
         with torch.inference_mode():
             # Validation loader now returns patch_counts for each batch
             for images, depths, patch_counts, shapes in tqdm.tqdm(val_loader, desc="Validation"):
                 # images: (Total_Patches, 3, H, W)
                 images = images.to(device, dtype=amp_dtype, non_blocking=use_cuda)
                 depths = depths.to(device, dtype=amp_dtype, non_blocking=use_cuda)
-                
-                with autocast(device_type=device.type, dtype=amp_dtype):
-                    pred = model(images, return_embedding=False)
+
+                pred = model(images, return_embedding=False)
                 
                 # Iterate through images in the batch by slicing using patch_counts
                 current_idx = 0

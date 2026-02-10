@@ -161,12 +161,17 @@ def main():
         else:
             new_state_dict[k] = v
             
-    print("Detected 5-layer decoder in checkpoint. Re-instantiating model with num_upsample=5...")
+    # Count decoder layers to determine num_upsample
+    decoder_layers = [k for k in new_state_dict.keys() if k.startswith("decoder.net.")]
+    num_upsample = len(set(k.split('.')[2] for k in decoder_layers))
+    if num_upsample == 0:
+        num_upsample = 4  # Default (ViT default)
+    print(f"Detected {num_upsample}-layer decoder in checkpoint")
     model = DepthViT(
-        model_name=args.model_name, 
+        model_name=args.model_name,
         img_size=args.img_size,
         pretrained=True,
-        num_upsample=5
+        num_upsample=num_upsample
     ).to(device)
     model.load_state_dict(new_state_dict, strict=True)
     

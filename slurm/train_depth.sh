@@ -37,7 +37,7 @@ uv run train --deeplearning \
     --depth_weight 1.0 \
     --jepa_weight 0.5 \
     --wandb \
-    --save_path checkpoints/depth_jepa_vit_small.pt
+    --save_path checkpoints/deeplearning.pt
 
 # ============================================
 # Alternative: vit_base for better quality (slower)

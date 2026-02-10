@@ -44,11 +44,15 @@ uv run train --supervised --epochs 50 --bs 16
 # Train the LeJEPA multi-view model (richer features, slower)
 uv run train --deeplearning --epochs 50 --bs 16
 
-# Evaluate a trained model
-uv run evaluate --model_path checkpoints/depth_jepa_vit_small.pt
+# Evaluate a trained model on the test set
+uv run evaluate --model_path checkpoints/supervised.pt
 
-# Run inference on an image
-uv run infer --model_path checkpoints/depth_jepa_vit_small.pt --image_path photo.jpg
+# Run inference on a single image (auto-detects model type)
+uv run infer --model_path checkpoints/supervised.pt --image_path photo.jpg
+
+# Inference with other model types
+uv run infer --model_path checkpoints/naive.pt --image_path photo.jpg --naive_mode gradient
+uv run infer --model_path checkpoints/classic.joblib --image_path photo.jpg
 ```
 
 ## Models
@@ -103,6 +107,27 @@ Use `--supervised` if you want a quick, straightforward run. Use `--deeplearning
 ├── checkpoints/                # Trained model checkpoints (not tracked)
 └── logs/                       # Training logs (not tracked)
 ```
+
+## Checkpoints
+
+Training saves checkpoints with standardized names under `checkpoints/`:
+
+| Model          | Default path                  | Format  | Contents                                       |
+|----------------|-------------------------------|---------|------------------------------------------------|
+| Naive baseline | `checkpoints/naive.pt`        | PyTorch | `mean_depth` float + metadata                  |
+| Classical ML   | `checkpoints/classic.joblib`  | joblib  | Trained `RandomForestRegressor`                |
+| Supervised DL  | `checkpoints/supervised.pt`   | PyTorch | Model state dict, optimizer, val metrics       |
+| LeJEPA DL      | `checkpoints/deeplearning.pt` | PyTorch | Model state dict, optimizer, val metrics, args |
+
+Override any default with `--save_path`:
+```bash
+uv run train --supervised --save_path checkpoints/my_experiment.pt
+```
+
+The inference script (`uv run infer`) auto-detects the model type from the checkpoint:
+- `.joblib` extension → Random Forest
+- `.pt` with `"type": "naive"` key → Naive baseline
+- Otherwise → ViT deep learning model
 
 ## Architecture
 

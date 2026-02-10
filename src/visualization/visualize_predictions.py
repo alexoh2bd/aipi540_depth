@@ -4,7 +4,7 @@ Visualize model predictions on validation samples.
 Shows predicted depth vs ground truth for multiple validation images.
 
 Usage:
-    python visualize_predictions.py --checkpoint checkpoints/depth_jepa_vit_small.pt --num_samples 3
+    python visualize_predictions.py --checkpoint checkpoints/supervised.pt --num_samples 3
 """
 
 import torch
@@ -170,7 +170,7 @@ def visualize_validation_predictions(
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize depth predictions on validation set")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/depth_jepa_vit_small.pt",
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/supervised.pt",
                        help="Path to model checkpoint")
     parser.add_argument("--num_samples", type=int, default=3,
                        help="Number of validation samples to visualize")

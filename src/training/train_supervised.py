@@ -54,7 +54,7 @@ def parse_args():
     parser.add_argument("--freeze_encoder", action="store_true",
                         help="Freeze ViT encoder (only train decoder + projection head)")
     parser.add_argument("--wandb", action="store_true", help="Enable W&B logging")
-    parser.add_argument("--save_path", type=str, default="checkpoints/depth_model2.pt")
+    parser.add_argument("--save_path", type=str, default="checkpoints/supervised.pt")
     return parser.parse_args()
 
 
@@ -245,16 +245,18 @@ def main():
         
         # Validation
         model.eval()
+        if use_mps:
+            torch.mps.synchronize()
+            torch.mps.empty_cache()
         val_acc = {"abs_rel_sum": 0, "sq_diff_sum": 0, "delta1_sum": 0, "delta2_sum": 0, "delta3_sum": 0, "n_pixels": 0}
-        
+
         with torch.inference_mode():
             for images, depths, _, _ in tqdm.tqdm(val_loader, desc="Validation"):
                 images = images.to(device, dtype=amp_dtype, non_blocking=use_cuda)
                 depths = depths.to(device, dtype=amp_dtype, non_blocking=use_cuda)
-                
-                with autocast(device_type=device.type, dtype=amp_dtype):
-                    pred_depth = model(images, return_embedding=False)
-                
+
+                pred_depth = model(images, return_embedding=False)
+
                 metrics = compute_metrics(pred_depth, depths)
                 for k, v in metrics.items():
                     val_acc[k] += v

@@ -3,12 +3,12 @@ CLI entry points for uv run scripts.
 
 Usage:
     uv run setup                              # Download the DDOS dataset
-    uv run train --naive
-    uv run train --classic
-    uv run train --supervised [--epochs 50 --bs 16 ...]
-    uv run train --deeplearning [--epochs 50 --bs 16 ...]
-    uv run evaluate --model_path checkpoints/model.pt [...]
-    uv run infer --model_path checkpoints/model.pt --image_path img.jpg [...]
+    uv run train --naive                      # → checkpoints/naive.pt
+    uv run train --classic                    # → checkpoints/classic.joblib
+    uv run train --supervised [--epochs 50 --bs 16 ...]   # → checkpoints/supervised.pt
+    uv run train --deeplearning [--epochs 50 --bs 16 ...]  # → checkpoints/deeplearning.pt
+    uv run evaluate --model_path checkpoints/supervised.pt [...]
+    uv run infer --model_path checkpoints/supervised.pt --image_path img.jpg [...]
 """
 
 import sys
