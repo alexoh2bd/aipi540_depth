@@ -29,6 +29,11 @@ dev = [
     "ruff>=0.15.0",
     "pytest>=9.0.2",
 ]
+server = [
+    "flask>=3.0",
+    "flask-cors>=5.0",
+    "gunicorn>=23.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]

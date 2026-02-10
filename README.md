@@ -74,11 +74,82 @@ This project implements four modeling approaches:
 
 Use `--supervised` if you want a quick, straightforward run. Use `--deeplearning` if you want the full pipeline with self-supervised representation learning.
 
+## Inference Server
+
+A Flask + Gunicorn server exposes the models as a REST API for the web frontend.
+
+### Setup
+
+```bash
+# Install server dependencies
+uv sync --group server
+```
+
+### Running
+
+```bash
+# Production (from project root)
+gunicorn -c server/gunicorn.conf.py server.app:app
+
+# Development
+python -m server.app
+```
+
+The server binds to `0.0.0.0:8000` by default. CORS is configured for `https://aipi540-frontend.vercel.app`.
+
+### Endpoints
+
+| Method | Path             | Description                            |
+|--------|------------------|----------------------------------------|
+| GET    | `/health`        | Server status and loaded models        |
+| GET    | `/models`        | List available models and the default  |
+| POST   | `/predict-depth` | Run depth inference on an uploaded image |
+
+### `POST /predict-depth`
+
+Send a multipart form with:
+
+| Field   | Type   | Required | Description                                            |
+|---------|--------|----------|--------------------------------------------------------|
+| `image` | file   | yes      | An image file (JPEG, PNG, etc.)                        |
+| `model` | string | no       | `naive`, `rf`, or `deeplearning` (auto-selects best available if omitted) |
+
+Response:
+
+```json
+{
+  "depth_map": "data:image/png;base64,...",
+  "model": "deeplearning",
+  "width": 1280,
+  "height": 720,
+  "inference_time_s": 0.842
+}
+```
+
+`depth_map` is a data URI you can use directly as an `<img>` src. The depth map is colorized with the inferno colormap.
+
+### Model availability
+
+The server loads whatever checkpoints are present in `checkpoints/`:
+
+| Model          | Checkpoint needed             | Notes                    |
+|----------------|-------------------------------|--------------------------|
+| `naive`        | none                          | Always available         |
+| `rf`           | `checkpoints/classic.joblib`  | Needs training first     |
+| `deeplearning` | `checkpoints/deeplearning.pt` | Needs training first     |
+
+### Configuration
+
+Edit `server/gunicorn.conf.py` to change bind address, workers, threads, or timeout. The default is 1 worker with 4 threads and a 120-second timeout to accommodate model loading and large-image inference.
+
 ## Project Structure
 
 ```
 .
 ├── pyproject.toml              # Dependencies, scripts, and project metadata
+├── server/
+│   ├── app.py                 # Flask inference server
+│   └── gunicorn.conf.py       # Gunicorn configuration
 ├── src/
 │   ├── cli.py                  # CLI entry points (setup, train, evaluate, infer)
 │   ├── models/
