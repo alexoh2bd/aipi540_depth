@@ -92,12 +92,13 @@ class DepthViT(nn.Module):
     """
     
     def __init__(
-        self, 
+        self,
         model_name="vit_small_patch16_224.augreg_in21k",
         img_size=224,
         pretrained=True,
         freeze_encoder=False,
         num_upsample=4,
+        grad_checkpointing=False,
     ):
         super().__init__()
         self.img_size = img_size
@@ -120,8 +121,8 @@ class DepthViT(nn.Module):
             for param in self.backbone.parameters():
                 param.requires_grad = False
         
-        # Gradient checkpointing for memory efficiency
-        self.backbone.set_grad_checkpointing(True)
+        # Gradient checkpointing trades speed for VRAM — disable on large GPUs
+        self.backbone.set_grad_checkpointing(grad_checkpointing)
         
         # Decoder for global view size
         self.decoder = DepthDecoder(

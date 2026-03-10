@@ -1,25 +1,24 @@
 # LeDEEP: Depth Estimation with LeJEPA + SIGReg
 
-Monocular depth estimation using a Vision Transformer encoder with LeJEPA-style multi-view self-supervised learning and SIGReg regularization.
+Monocular depth estimation using a Vision Transformer encoder with LeJEPA-style multi-view self-supervised learning and
+SIGReg regularization.
 
 ## Setup
 
 This project uses [uv](https://docs.astral.sh/uv/) for dependency management. Three commands to get running:
 
 ```bash
-# 1. Install dependencies
+# 1. Install dependencies (CPU/MPS)
 uv sync
+
+# 1. Install dependencies (CUDA)
+uv sync --group cuda
 
 # 2. Download the DDOS dataset (~136 GB)
 uv run setup
 
-# 3. Train a model (see Quick Start for all options)
-uv run train --deeplearning --epochs 50 --bs 16
-```
-
-For GPU support with CUDA 12.x on the cluster:
-```bash
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# 3. Train a model (see Training Configuration for recommended args)
+uv run train --deeplearning --epochs 50
 ```
 
 You can also set `LEDEEP_DATA_DIR` to point to an existing dataset download instead of `data/DDOS/`.
@@ -29,7 +28,7 @@ You can also set `LEDEEP_DATA_DIR` to point to an existing dataset download inst
 All commands are available as `uv run` scripts:
 
 ```bash
-# Download the dataset (only needed once, ~3-5 GB)
+# Download the dataset (only needed once, ~136 GB)
 uv run setup
 
 # Train the naive baseline (mean depth predictor)
@@ -39,10 +38,10 @@ uv run train --naive --evaluate
 uv run train --classic --evaluate
 
 # Train the supervised depth model (single-view, simpler and faster)
-uv run train --supervised --epochs 50 --bs 16
+uv run train --supervised --epochs 50
 
 # Train the LeJEPA multi-view model (richer features, slower)
-uv run train --deeplearning --epochs 50 --bs 16
+uv run train --deeplearning --epochs 50
 
 # Evaluate a trained model on the test set
 uv run evaluate --model_path checkpoints/supervised.pt
@@ -68,11 +67,16 @@ This project implements four modeling approaches:
 
 ### Supervised vs. LeJEPA: which should I use?
 
-**`--supervised`** trains a standard depth estimation model: one image in, one depth map out, with SIGReg regularization on the encoder embeddings. It supports both ViT and ResNet backbones, trains faster, and is a good starting point or ablation baseline.
+**`--supervised`** trains a standard depth estimation model: one image in, one depth map out, with SIGReg regularization
+on the encoder embeddings. It supports both ViT and ResNet backbones, trains faster, and is a good starting point or
+ablation baseline.
 
-**`--deeplearning`** adds LeJEPA multi-view self-supervised learning on top of depth supervision. Each training image is augmented into 2 global crops (224px) and 4 local crops (96px), and the model learns to produce consistent representations across all of them. This is slower to train but encourages richer, view-invariant features. ViT only.
+**`--deeplearning`** adds LeJEPA multi-view self-supervised learning on top of depth supervision. Each training image is
+augmented into 2 global crops (224px) and 4 local crops (96px), and the model learns to produce consistent
+representations across all of them. This is slower to train but encourages richer, view-invariant features. ViT only.
 
-Use `--supervised` if you want a quick, straightforward run. Use `--deeplearning` if you want the full pipeline with self-supervised representation learning.
+Use `--supervised` if you want a quick, straightforward run. Use `--deeplearning` if you want the full pipeline with
+self-supervised representation learning.
 
 ## Inference Server
 
@@ -99,19 +103,19 @@ The server binds to `0.0.0.0:8000` by default. CORS is configured for `https://a
 
 ### Endpoints
 
-| Method | Path             | Description                            |
-|--------|------------------|----------------------------------------|
-| GET    | `/health`        | Server status and loaded models        |
-| GET    | `/models`        | List available models and the default  |
+| Method | Path             | Description                              |
+|--------|------------------|------------------------------------------|
+| GET    | `/health`        | Server status and loaded models          |
+| GET    | `/models`        | List available models and the default    |
 | POST   | `/predict-depth` | Run depth inference on an uploaded image |
 
 ### `POST /predict-depth`
 
 Send a multipart form with:
 
-| Field   | Type   | Required | Description                                            |
-|---------|--------|----------|--------------------------------------------------------|
-| `image` | file   | yes      | An image file (JPEG, PNG, etc.)                        |
+| Field   | Type   | Required | Description                                                               |
+|---------|--------|----------|---------------------------------------------------------------------------|
+| `image` | file   | yes      | An image file (JPEG, PNG, etc.)                                           |
 | `model` | string | no       | `naive`, `rf`, or `deeplearning` (auto-selects best available if omitted) |
 
 Response:
@@ -132,15 +136,16 @@ Response:
 
 The server loads whatever checkpoints are present in `checkpoints/`:
 
-| Model          | Checkpoint needed             | Notes                    |
-|----------------|-------------------------------|--------------------------|
-| `naive`        | none                          | Always available         |
-| `rf`           | `checkpoints/classic.joblib`  | Needs training first     |
-| `deeplearning` | `checkpoints/deeplearning.pt` | Needs training first     |
+| Model          | Checkpoint needed             | Notes                |
+|----------------|-------------------------------|----------------------|
+| `naive`        | none                          | Always available     |
+| `rf`           | `checkpoints/classic.joblib`  | Needs training first |
+| `deeplearning` | `checkpoints/deeplearning.pt` | Needs training first |
 
 ### Configuration
 
-Edit `server/gunicorn.conf.py` to change bind address, workers, threads, or timeout. The default is 1 worker with 4 threads and a 120-second timeout to accommodate model loading and large-image inference.
+Edit `server/gunicorn.conf.py` to change bind address, workers, threads, or timeout. The default is 1 worker with 4
+threads and a 120-second timeout to accommodate model loading and large-image inference.
 
 ## Project Structure
 
@@ -187,15 +192,17 @@ Training saves checkpoints with standardized names under `checkpoints/`:
 |----------------|-------------------------------|---------|------------------------------------------------|
 | Naive baseline | `checkpoints/naive.pt`        | PyTorch | `mean_depth` float + metadata                  |
 | Classical ML   | `checkpoints/classic.joblib`  | joblib  | Trained `RandomForestRegressor`                |
-| Supervised DL  | `checkpoints/supervised.pt`   | PyTorch | Model state dict, optimizer, val metrics       |
+| Supervised DL  | `checkpoints/supervised.pt`   | PyTorch | Model state dict, optimizer, val metrics, args |
 | LeJEPA DL      | `checkpoints/deeplearning.pt` | PyTorch | Model state dict, optimizer, val metrics, args |
 
 Override any default with `--save_path`:
+
 ```bash
 uv run train --supervised --save_path checkpoints/my_experiment.pt
 ```
 
 The inference script (`uv run infer`) auto-detects the model type from the checkpoint:
+
 - `.joblib` extension → Random Forest
 - `.pt` with `"type": "naive"` key → Naive baseline
 - Otherwise → ViT deep learning model
@@ -206,7 +213,9 @@ There are two separate scripts for testing trained models:
 
 ### `uv run evaluate` — Quantitative evaluation on the test set
 
-Runs a ViT model over the entire test split, computes pixel-level metrics (AbsRel, RMSE), and compares against a naive gradient baseline. Saves 3 sample visualizations showing original image, ground truth, naive prediction, and model prediction side by side.
+Runs a ViT model over the entire test split, computes pixel-level metrics (AbsRel, RMSE), and compares against a naive
+gradient baseline. Saves 3 sample visualizations showing original image, ground truth, naive prediction, and model
+prediction side by side.
 
 ```bash
 uv run evaluate --model_path checkpoints/deeplearning.pt
@@ -220,7 +229,8 @@ Output goes to `test_results/` by default (override with `--save_dir`).
 
 ### `uv run infer` — Inference on arbitrary images
 
-Runs any model type on your own images (no ground truth needed). Auto-detects the model type from the checkpoint and produces a side-by-side visualization of the input and predicted depth map.
+Runs any model type on your own images (no ground truth needed). Auto-detects the model type from the checkpoint and
+produces a side-by-side visualization of the input and predicted depth map.
 
 ```bash
 # ViT model — chunks into overlapping 224px patches, stitches back
@@ -244,22 +254,72 @@ Output goes to `inference_results/` by default (override with `--output_dir`). A
 ## Architecture
 
 The deep learning model uses a pretrained **ViT-Small** (patch size 16, ImageNet-21k) encoder that produces:
+
 - **Patch tokens** (14x14 spatial grid) fed to a progressive convolutional decoder for dense depth prediction
 - **CLS token** projected into a 512-dim embedding space for the JEPA objective
 
-The decoder upsamples through 4 stages of transposed convolutions (14x14 -> 224x224) to produce a single-channel depth map normalized to [0, 1].
+The decoder upsamples through 4 stages of transposed convolutions (14x14 -> 224x224) to produce a single-channel depth
+map normalized to [0, 1].
 
 ### Training Details
 
 The deep learning model uses a composite loss: `depth_weight * ScaleInvariantLoss + jepa_weight * LeJEPA_Loss`
 
-The LeJEPA training paradigm generates 2 global views (224x224) and 4 local views (96x96) per image, with synchronized transforms applied to both RGB and depth. SIGReg regularization prevents representation collapse by encouraging the embedding space to follow a standard Gaussian distribution.
+The LeJEPA training paradigm generates 2 global views (224x224) and 4 local views (96x96) per image, with synchronized
+transforms applied to both RGB and depth. SIGReg regularization prevents representation collapse by encouraging the
+embedding space to follow a standard Gaussian distribution.
+
+### Training Configuration
+
+The defaults are tuned for high-end GPUs (RTX 5090, A100, etc.). For constrained systems, reduce batch size and workers.
+
+**High-end GPU (24+ GB VRAM, e.g. RTX 3090/4090/5090, A100):**
+
+```bash
+# LeJEPA (default settings — uses ~18 GB VRAM)
+uv run train --deeplearning --epochs 50 --bs 64 --num_workers 8
+
+# Supervised
+uv run train --supervised --epochs 50 --bs 64 --num_workers 8
+```
+
+**Mid-range GPU (8-16 GB VRAM, e.g. RTX 3070/4070):**
+
+```bash
+# LeJEPA — smaller batch, gradient accumulation to compensate
+uv run train --deeplearning --epochs 50 --bs 8 --grad_accum 4 --num_workers 4
+
+# Supervised
+uv run train --supervised --epochs 50 --bs 16 --num_workers 4
+```
+
+**CPU / MPS (Apple Silicon):**
+
+```bash
+# LeJEPA — small batch, fewer workers
+uv run train --deeplearning --epochs 50 --bs 4 --grad_accum 8 --num_workers 2
+
+# Supervised (faster starting point)
+uv run train --supervised --epochs 50 --bs 8 --num_workers 2
+```
+
+Key parameters:
+
+| Flag            | Default | Description                                                                    |
+|-----------------|---------|--------------------------------------------------------------------------------|
+| `--bs`          | 64      | Batch size. Reduce if you hit OOM                                              |
+| `--grad_accum`  | 1       | Gradient accumulation steps. Increase to simulate larger batches on small GPUs |
+| `--num_workers` | 8       | DataLoader workers. Match to your CPU core count                               |
+| `--lr`          | 2e-4    | Learning rate. Scale up with larger batch sizes if desired                     |
+| `--epochs`      | 30      | Training epochs                                                                |
+| `--V_global`    | 2       | Global views per image (LeJEPA only)                                           |
+| `--V_local`     | 4       | Local views per image (LeJEPA only)                                            |
 
 ## Dataset
 
-**DDOS (Depth from Driving Open Scenes)**: [benediktkol/DDOS](https://huggingface.co/datasets/benediktkol/DDOS)
+**DDOS (Drone Depth and Obstacle Segmentation)**: [benediktkol/DDOS](https://huggingface.co/datasets/benediktkol/DDOS)
 
-- Downloaded automatically via `uv run setup` (~3-5 GB)
+- Downloaded automatically via `uv run setup` (~136 GB)
 - Resolution: 1280x720 paired RGB + 16-bit depth maps
 - Depth normalization: `depth / 65535.0` -> [0, 1]
 - Train/val split: 95/5
@@ -267,7 +327,9 @@ The LeJEPA training paradigm generates 2 global views (224x224) and 4 local view
 
 ## SLURM Scripts
 
-The `slurm/` directory contains batch job scripts for running on the Duke compsci-gpu cluster. These are cluster-specific and hardcode partition names and GPU types. Adjust the `source` paths and `--gres` flags for your environment.
+The `slurm/` directory contains batch job scripts for running on the Duke compsci-gpu cluster. These are
+cluster-specific and hardcode partition names and GPU types. Adjust the `source` paths and `--gres` flags for your
+environment.
 
 ## References
 

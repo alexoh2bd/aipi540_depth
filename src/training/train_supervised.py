@@ -207,8 +207,9 @@ def main():
                 # Forward
                 pred_depth, embedding = model(images, return_embedding=True)
                 
-                # Depth loss
-                depth_loss = depth_loss_fn(pred_depth, depths)
+                # Depth loss (mask out zero-depth / invalid pixels)
+                mask = (depths > 0).float()
+                depth_loss = depth_loss_fn(pred_depth, depths, mask=mask)
                 
                 # SIGReg on embeddings (encourages Gaussian distribution)
                 sigreg_loss = sigreg(embedding.float())
@@ -282,11 +283,13 @@ def main():
         # Save best model
         if val_metrics["delta1"] > best_delta1:
             best_delta1 = val_metrics["delta1"]
+            os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_metrics": val_metrics,
+                "args": vars(args),
             }, args.save_path)
             logging.info(f"Saved best model with δ1={best_delta1:.4f}")
     

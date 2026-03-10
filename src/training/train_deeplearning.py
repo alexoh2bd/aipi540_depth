@@ -86,14 +86,14 @@ def LeJEPA_Depth(global_proj, all_proj, sigreg, lamb):
 def parse_args():
     parser = argparse.ArgumentParser(description="Train depth estimation with JEPA")
     parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--bs", type=int, default=128, help="Batch size")
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--bs", type=int, default=64, help="Batch size")
+    parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--global_img_size", type=int, default=224)
     parser.add_argument("--local_img_size", type=int, default=96)
     parser.add_argument("--model", type=str, default="vit_small_patch16_224.augreg_in21k")
     parser.add_argument("--device", type=str, default=None,
                         help="Device to use (auto-detects cuda > mps if omitted)")
-    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--grad_accum", type=int, default=1)
     parser.add_argument("--prefetch_factor", type=int, default=4)
 
@@ -147,9 +147,16 @@ def main():
         torch.backends.cuda.enable_flash_sdp(True)
         torch.backends.cuda.enable_mem_efficient_sdp(True)
         torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     torch.manual_seed(42)
 
-    logging.info(f"Using device: {device} (dtype: {amp_dtype})")
+    if use_cuda:
+        logging.info(f"Using CUDA: {torch.cuda.get_device_name()} (dtype: {amp_dtype})")
+    elif use_mps:
+        logging.info(f"Using MPS (dtype: {amp_dtype})")
+    else:
+        logging.info(f"Using CPU (dtype: {amp_dtype})")
     
     # Datasets
     logging.info("Loading datasets...")
@@ -191,7 +198,7 @@ def main():
         prefetch_factor=args.prefetch_factor,
         collate_fn=collate_depth,  # Single view collate (handles patch stacking)
     )
-    detach=True
+    detach = False
     
     logging.info(f"Train: {len(train_ds)} samples, Val: {len(val_ds)} samples")
     logging.info(f"Views: {args.V_global} global + {args.V_local} local")
@@ -204,7 +211,11 @@ def main():
         pretrained=True,
     ).to(device, dtype=amp_dtype)
     if use_cuda:
-        model = torch.compile(model)
+        try:
+            import triton  # noqa: F401
+            model = torch.compile(model)
+        except ImportError:
+            logging.warning("Triton not available, skipping torch.compile (eager mode)")
 
     # SIGReg module (same as in run_JEPA.py)
     sigreg = SIGReg().to(device, dtype=amp_dtype)
@@ -300,7 +311,8 @@ def main():
                     if pred.shape[-1] != target.shape[-1]:
                         pred = F.interpolate(pred, size=target.shape[-2:], 
                                            mode='bilinear', align_corners=False)
-                    depth_losses.append(depth_loss_fn(pred, target))
+                    mask = (target > 0).float()
+                    depth_losses.append(depth_loss_fn(pred, target, mask=mask))
                 depth_loss = torch.stack(depth_losses).mean()
                 
                 # === Total Loss ===
@@ -347,8 +359,7 @@ def main():
         if use_mps:
             torch.mps.synchronize()
             torch.mps.empty_cache()
-        val_metrics = {"abs_rel": 0, "rmse": 0, "delta1": 0, "delta2": 0, "delta3": 0}
-        num_val_images = 0
+        val_acc = {"abs_rel_sum": 0, "sq_diff_sum": 0, "delta1_sum": 0, "delta2_sum": 0, "delta3_sum": 0, "n_pixels": 0}
 
         with torch.inference_mode():
             # Validation loader now returns patch_counts for each batch
@@ -358,37 +369,20 @@ def main():
                 depths = depths.to(device, dtype=amp_dtype, non_blocking=use_cuda)
 
                 pred = model(images, return_embedding=False)
-                
-                # Iterate through images in the batch by slicing using patch_counts
-                current_idx = 0
-                for count in patch_counts:
-                    # Slice patches for the current image
-                    img_pred = pred[current_idx : current_idx + count]
-                    img_target = depths[current_idx : current_idx + count]
-                    current_idx += count
-                    
-                    if count == 0:
-                        continue
-                        
-                    # Compute aggregated stats for this single image (composed of N patches)
-                    # We pass 'count' largely to satisfy the signature if needed, 
-                    # but compute_metrics sums over whatever tensor it gets.
-                    img_stats = compute_metrics(img_pred, img_target, count)
-                    
-                    # Compute per-image final metrics
-                    n = img_stats["n_pixels"]
-                    if n > 0:
-                        val_metrics["abs_rel"] += img_stats["abs_rel_sum"] / n
-                        val_metrics["rmse"] += (img_stats["sq_diff_sum"] / n) ** 0.5
-                        val_metrics["delta1"] += img_stats["delta1_sum"] / n
-                        val_metrics["delta2"] += img_stats["delta2_sum"] / n
-                        val_metrics["delta3"] += img_stats["delta3_sum"] / n
-                        num_val_images += 1
 
-        # Average over number of images
-        if num_val_images > 0:
-            for k in val_metrics:
-                val_metrics[k] /= num_val_images
+                metrics = compute_metrics(pred, depths)
+                for k, v in metrics.items():
+                    val_acc[k] += v
+
+        # Compute final metrics from accumulated pixel-level sums
+        n = val_acc["n_pixels"]
+        val_metrics = {
+            "abs_rel": val_acc["abs_rel_sum"] / n if n > 0 else 0,
+            "rmse": (val_acc["sq_diff_sum"] / n) ** 0.5 if n > 0 else 0,
+            "delta1": val_acc["delta1_sum"] / n if n > 0 else 0,
+            "delta2": val_acc["delta2_sum"] / n if n > 0 else 0,
+            "delta3": val_acc["delta3_sum"] / n if n > 0 else 0,
+        }
         
         logging.info(f"Val - AbsRel: {val_metrics['abs_rel']:.4f}, RMSE: {val_metrics['rmse']:.4f}, "
                     f"δ1: {val_metrics['delta1']:.4f}")
@@ -399,6 +393,7 @@ def main():
         # Save best model
         if val_metrics["delta1"] > best_delta1:
             best_delta1 = val_metrics["delta1"]
+            os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),

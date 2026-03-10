@@ -197,8 +197,8 @@ def main():
         pin_memory=(device.type == "cuda")
     )
     
-    metrics_acc = {"abs_rel": 0, "sq_diff": 0, "n_pixels": 0}
-    naive_acc = {"abs_rel": 0, "sq_diff": 0, "n_pixels": 0}
+    metrics_acc = {"abs_rel": 0, "sq_diff": 0, "delta1": 0, "delta2": 0, "delta3": 0, "n_pixels": 0}
+    naive_acc = {"abs_rel": 0, "sq_diff": 0, "delta1": 0, "delta2": 0, "delta3": 0, "n_pixels": 0}
     
     visualized_count = 0
     
@@ -242,10 +242,16 @@ def main():
                 
                 metrics_acc["abs_rel"] += m["abs_rel_sum"]
                 metrics_acc["sq_diff"] += m["sq_diff_sum"]
+                metrics_acc["delta1"] += m["delta1_sum"]
+                metrics_acc["delta2"] += m["delta2_sum"]
+                metrics_acc["delta3"] += m["delta3_sum"]
                 metrics_acc["n_pixels"] += m["n_pixels"]
-                
+
                 naive_acc["abs_rel"] += nm["abs_rel_sum"]
                 naive_acc["sq_diff"] += nm["sq_diff_sum"]
+                naive_acc["delta1"] += nm["delta1_sum"]
+                naive_acc["delta2"] += nm["delta2_sum"]
+                naive_acc["delta3"] += nm["delta3_sum"]
                 naive_acc["n_pixels"] += nm["n_pixels"]
                 
                 # Visualize 3 samples
@@ -257,16 +263,22 @@ def main():
     # Final Metrics
     print("\n=== Test Results ===")
     if metrics_acc["n_pixels"] > 0:
-        model_abs_rel = metrics_acc['abs_rel'] / metrics_acc['n_pixels']
-        model_rmse = (metrics_acc['sq_diff'] / metrics_acc['n_pixels'])**0.5
-        print(f"Model AbsRel: {model_abs_rel:.4f}")
-        print(f"Model RMSE:   {model_rmse:.4f}")
-    
+        n = metrics_acc['n_pixels']
+        print("--- Model ---")
+        print(f"  AbsRel:        {metrics_acc['abs_rel'] / n:.4f}")
+        print(f"  RMSE:          {(metrics_acc['sq_diff'] / n)**0.5:.4f}")
+        print(f"  Delta < 1.25:  {metrics_acc['delta1'] / n:.4f}")
+        print(f"  Delta < 1.25²: {metrics_acc['delta2'] / n:.4f}")
+        print(f"  Delta < 1.25³: {metrics_acc['delta3'] / n:.4f}")
+
     if naive_acc["n_pixels"] > 0:
-        naive_abs_rel = naive_acc['abs_rel'] / naive_acc['n_pixels']
-        naive_rmse = (naive_acc['sq_diff'] / naive_acc['n_pixels'])**0.5
-        print(f"Naive AbsRel: {naive_abs_rel:.4f}")
-        print(f"Naive RMSE:   {naive_rmse:.4f}")
+        n = naive_acc['n_pixels']
+        print("--- Naive (Gradient) ---")
+        print(f"  AbsRel:        {naive_acc['abs_rel'] / n:.4f}")
+        print(f"  RMSE:          {(naive_acc['sq_diff'] / n)**0.5:.4f}")
+        print(f"  Delta < 1.25:  {naive_acc['delta1'] / n:.4f}")
+        print(f"  Delta < 1.25²: {naive_acc['delta2'] / n:.4f}")
+        print(f"  Delta < 1.25³: {naive_acc['delta3'] / n:.4f}")
 
 if __name__ == "__main__":
     main()
